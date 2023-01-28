@@ -16,6 +16,7 @@ from dask.distributed import Client, LocalCluster
 from arboreto.utils import load_tf_names
 from arboreto.algo import grnboost2
 from ctxcore.rnkdb import FeatherRankingDatabase as RankingDatabase
+#from ctxcore.ctdb import clear_cache
 from pyscenic.utils import load_motifs, modules_from_adjacencies
 from pyscenic.prune import prune2df, df2regulons
 from pyscenic.aucell import aucell, derive_auc_threshold, create_rankings
@@ -25,7 +26,9 @@ from stereo.io.reader import read_gef
 #from st_pyscenic.utils import modules_from_adjacencies #grnboost2
 from stereo.log_manager import LogManager
 
-LOGGER = LogManager(log_path='./planarian.log', level='debug').get_logger(name='Stereo')
+logger = LogManager(log_path='./SS200000135TL_D1.cellbin.log',level='debug').get_logger(name='Stereo')
+
+
 
 def is_valid_exp_matrix(mtx:pd.DataFrame):
     '''check if the exp matrix is vaild for the grn pipline'''
@@ -36,7 +39,7 @@ def is_valid_exp_matrix(mtx:pd.DataFrame):
 
 
 def load_data(fn:str, bin_type='cell_bins'):
-    LOGGER.info('Loading expression data...')
+    logger.info('Loading expression data...')
     extension = os.path.splitext(fn)[1]
     if extension == '.csv':
         ex_mtx = pd.read_csv(fn)
@@ -63,7 +66,7 @@ def grn_inference(ex_matrix,
                     num_workers:int,
                     verbose=True,
                     fn:str='adj.csv')->pd.DataFrame:
-    LOGGER.info('GRN inferencing...')
+    logger.info('GRN inferencing...')
     begin1 = time.time()
     custom_client = _set_client(num_workers)
     adjacencies = grnboost2(ex_matrix, 
@@ -72,7 +75,7 @@ def grn_inference(ex_matrix,
                             verbose=True,
                             client_or_address=custom_client) 
     end1 = time.time()
-    print(f'GRN inference DONE in {(end1-begin1)//60} min {(end1-begin1)%60} sec')
+    logger.info(f'GRN inference DONE in {(end1-begin1)//60} min {(end1-begin1)%60} sec')
     adjacencies.to_csv(fn, index=False)
     return adjacencies    
 
@@ -101,7 +104,7 @@ def name(fname:str)->str:
 
 
 def load_database(DATABASES_GLOB:str) -> list: 
-    print('Loading ranked databases...')
+    logger.info('Loading ranked databases...')
     db_fnames = glob.glob(DATABASES_GLOB)
     dbs = [RankingDatabase(fname=fname, name=name(fname)) for fname in db_fnames]
     return dbs
@@ -124,9 +127,10 @@ def ctx_get_regulons(adjacencies:pd.DataFrame,
             )
         )
     end2 = time.time()
-    print(f'Regulon Prediction DONE in {(end2-begin2)//60} min {(end2-begin2)%60} sec')
-    print(f'generated {len(modules)} modules')
+    logger.info(f'Regulon Prediction DONE in {(end2-begin2)//60} min {(end2-begin2)%60} sec')
+    logger.info(f'generated {len(modules)} modules')
     # 4.2 Create regulons from this table of enriched motifs.
+    #clear_cache()
     if is_prune:
         with ProgressBar():
            df = prune2df(dbs, modules, MOTIF_ANNOTATIONS_FNAME, num_workers=num_workers) 
@@ -145,7 +149,7 @@ def auc_activity_level(ex_matrix,
     begin4 = time.time()
     auc_mtx = aucell(ex_matrix, regulons, auc_threshold=auc_thld, num_workers=num_workers)
     end4 = time.time()
-    print(f'Cellular Enrichment DONE in {(end4-begin4)//60} min {(end4-begin4)%60} sec')
+    logger.info(f'Cellular Enrichment DONE in {(end4-begin4)//60} min {(end4-begin4)%60} sec')
     auc_mtx.to_csv(fn)
     return auc_mtx
 
@@ -167,12 +171,11 @@ if __name__ == '__main__':
     begin = time.time()
     RESOURCES_FOLDER="/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/resource"
     DATABASE_FOLDER = "/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/database/"
-    DATABASES_GLOB = os.path.join(DATABASE_FOLDER, 'hg19-tss-centered-5kb-10species.mc9nr.genes_vs_motifs.rankings.feather')
-    #DATABASES_GLOB = '/dellfsqd2/ST_OCEAN/USER/hankai/software/SpatialTranscript/scenic/cistarget_databases.plarian/planrian.regions_vs_motifs.rankings.feather'
-    MOTIF_ANNOTATIONS_FNAME = '/dellfsqd2/ST_OCEAN/USER/hankai/software/SpatialTranscript/scenic/cistarget_databases.plarian/motifs-v9-nr.planarian-m0.001-o0.0.tbl'
-    MM_TFS_FNAME = os.path.join(RESOURCES_FOLDER, 'TFs.txt')#'hs_hgnc_tfs.txt')#'mm_tfs.txt')
-    #SC_EXP_FNAME = os.path.join(RESOURCES_FOLDER, 'StereopyData/SS200000135TL_D1.cellbin.gef')#SS200000154TR_F5.cellbin.gef')
-    SC_EXP_FNAME = os.path.join(RESOURCES_FOLDER, 'WT_smes_cell_norm.csv')
+    DATABASES_GLOB = os.path.join(DATABASE_FOLDER,'mm10_10kbp_up_10kbp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather') 
+    MOTIF_ANNOTATIONS_FNAME = os.path.join(RESOURCES_FOLDER, 'motifs/motifs-v10nr_clust-nr.mgi-m0.001-o0.0.tbl')
+    MM_TFS_FNAME = os.path.join(RESOURCES_FOLDER, 'tfs/test_mm_mgi_tfs.txt')#'TFs.txt')#'hs_hgnc_tfs.txt')#'mm_tfs.txt')
+    SC_EXP_FNAME = os.path.join(RESOURCES_FOLDER, 'StereopyData/SS200000135TL_D1.cellbin.gef')#SS200000154TR_F5.cellbin.gef')
+    #SC_EXP_FNAME = os.path.join(RESOURCES_FOLDER, 'WT_smes_cell_norm.csv')
     #SC_EXP_FNAME = sys.argv[1]
     #MM_TFS_FNAME = sys.argv[2]
 
@@ -181,7 +184,7 @@ if __name__ == '__main__':
     ex_matrix, genes = load_data(SC_EXP_FNAME)
 
     # 1. load TF list
-    print('Loading TF list...')
+    logger.info('Loading TF list...')
     tf_names = load_tf_names(MM_TFS_FNAME)
 
 
@@ -190,24 +193,20 @@ if __name__ == '__main__':
 
 
     # 3. GRN inference
-    adjacencies = grn_inference(ex_matrix,
-                tf_names,
-                genes,
-                num_workers=24) 
-    #adjacencies = pd.read_csv('/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/test2/adj.csv')
+    adjacencies = pd.read_csv('adj.csv')
 
     unique_adj_genes = set(adjacencies["TF"]).union(set(adjacencies["target"])) - set(ex_matrix.columns)
-    print(f'find {len(unique_adj_genes)/len(set(ex_matrix.columns))} unique genes')
+    logger.info(f'find {len(unique_adj_genes)/len(set(ex_matrix.columns))} unique genes')
 
     # 4. Regulon prediction aka cisTarget from CLI
     regulons = ctx_get_regulons(adjacencies, ex_matrix, dbs, MOTIF_ANNOTATIONS_FNAME, num_workers=24)
 
     # 5: Cellular enrichment (aka AUCell) from CLI
-    auc_mtx = auc_activity(ex_matrix, regulons, auc_thld=0.5, num_workers=24)
+    auc_mtx = auc_activity_level(ex_matrix, regulons, auc_thld=0.5, num_workers=24)
     
     # END
     end = time.time()
-    print(f'script finished in {(end-begin)//60} min {(end-begin)%60} sec')
+    logger.info(f'script finished in {(end-begin)//60} min {(end-begin)%60} sec')
    
 
 
