@@ -69,11 +69,11 @@ class RegulatoryNetwork(AlgorithmBase):
     
     @staticmethod
     def is_valid_exp_matrix(mtx:pd.DataFrame):
-    '''check if the exp matrix is vaild for the grn pipline'''
-    return (all(isinstance(idx, str) for idx in mtx.index) 
-            and all(isinstance(idx, str) for idx in mtx.columns)
-            and (mtx.index.nlevels == 1)
-            and (mtx.columns.nlevels == 1))
+        '''check if the exp matrix is vaild for the grn pipline'''
+        return (all(isinstance(idx, str) for idx in mtx.index)
+                and all(isinstance(idx, str) for idx in mtx.columns)
+                and (mtx.index.nlevels == 1)
+                and (mtx.columns.nlevels == 1))
 
     @staticmethod
     def load_data(fn:str, bin_type='cell_bins'):
@@ -156,7 +156,7 @@ class RegulatoryNetwork(AlgorithmBase):
         return modules    
    
 
-    def prune(modules, MOTIF_ANNOTATIONS_FNAME, num_workers=num_workers, is_prune:bool=True, rgn:str='regulons.csv')
+    def prune(modules, MOTIF_ANNOTATIONS_FNAME, num_workers=num_workers, is_prune:bool=True, rgn:str='regulons.csv'):
         if is_prune:
             with ProgressBar():
                df = prune2df(dbs, modules, MOTIF_ANNOTATIONS_FNAME, num_workers=num_workers) 
@@ -220,9 +220,9 @@ class RegulatoryNetwork(AlgorithmBase):
 
 
     def main(self):
-    '''
-    A pipeline?
-    '''
+        '''
+        A pipeline?
+        '''
         pass
 
 
