@@ -10,23 +10,22 @@ import loompy as lp
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+from scanpy.pl import dotplot
 from pyscenic.export import export2loom
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, LocalCluster
 from arboreto.utils import load_tf_names
 from arboreto.algo import grnboost2
 from ctxcore.rnkdb import FeatherRankingDatabase as RankingDatabase
-#from ctxcore.ctdb import clear_cache
 from pyscenic.utils import load_motifs, modules_from_adjacencies
 from pyscenic.prune import prune2df, df2regulons
-from pyscenic.aucell import aucell, derive_auc_threshold, create_rankings
-from pyscenic.prune import _prepare_client
+from pyscenic.aucell import aucell
 
 from stereo.io.reader import read_gef
-#from st_pyscenic.utils import modules_from_adjacencies #grnboost2
 from stereo.log_manager import LogManager
+from stereo.plots.plot_base import PlotBase
+from stereo.algorithm_base import AlgorithmBase, ErrorCode
 
-logger = LogManager(log_path='./SS200000135TL_D1.cellbin.log',level='debug').get_logger(name='Stereo')
 
 
 
@@ -130,7 +129,6 @@ def ctx_get_regulons(adjacencies:pd.DataFrame,
     logger.info(f'Regulon Prediction DONE in {(end2-begin2)//60} min {(end2-begin2)%60} sec')
     logger.info(f'generated {len(modules)} modules')
     # 4.2 Create regulons from this table of enriched motifs.
-    #clear_cache()
     if is_prune:
         with ProgressBar():
            df = prune2df(dbs, modules, MOTIF_ANNOTATIONS_FNAME, num_workers=num_workers) 
@@ -166,18 +164,15 @@ def save2loom(auc_mtx, LOOM_FILE:str='output.loom'):
 
 
 
-
 if __name__ == '__main__':
+    logger = LogManager(log_path='./SS200000135TL_D1.cellbin.log',level='debug').get_logger(name='Stereo')
     begin = time.time()
     RESOURCES_FOLDER="/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/resource"
     DATABASE_FOLDER = "/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/database/"
     DATABASES_GLOB = os.path.join(DATABASE_FOLDER,'mm10_10kbp_up_10kbp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather') 
     MOTIF_ANNOTATIONS_FNAME = os.path.join(RESOURCES_FOLDER, 'motifs/motifs-v10nr_clust-nr.mgi-m0.001-o0.0.tbl')
-    MM_TFS_FNAME = os.path.join(RESOURCES_FOLDER, 'tfs/test_mm_mgi_tfs.txt')#'TFs.txt')#'hs_hgnc_tfs.txt')#'mm_tfs.txt')
-    SC_EXP_FNAME = os.path.join(RESOURCES_FOLDER, 'StereopyData/SS200000135TL_D1.cellbin.gef')#SS200000154TR_F5.cellbin.gef')
-    #SC_EXP_FNAME = os.path.join(RESOURCES_FOLDER, 'WT_smes_cell_norm.csv')
-    #SC_EXP_FNAME = sys.argv[1]
-    #MM_TFS_FNAME = sys.argv[2]
+    MM_TFS_FNAME = os.path.join(RESOURCES_FOLDER, 'tfs/test_mm_mgi_tfs.txt')
+    SC_EXP_FNAME = os.path.join(RESOURCES_FOLDER, 'StereopyData/SS200000135TL_D1.cellbin.gef')
 
 
     # 0. Load StereoExpData file

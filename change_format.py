@@ -20,6 +20,9 @@ adata = sc.read_10x_mtx(
     dirn,                 # the directory with the `.mtx` file
     var_names='gene_symbols',   # use gene symbols for the variable names (variables-axis index)
     cache=True) 
+print(adata.var)
+print(adata.obs)
+print(adata.X)
 
 row_attrs = { 
     "Gene": np.array(adata.var.index) ,
