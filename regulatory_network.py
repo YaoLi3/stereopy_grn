@@ -14,10 +14,8 @@ change log:
 
 # python core modules
 import os
-import time
 import csv
 import warnings
-import sys
 from typing import Union
 
 # third party modules
@@ -28,10 +26,10 @@ import numpy as np
 import seaborn as sns
 import scanpy as sc
 import matplotlib.pyplot as plt
+from multiprocessing import cpu_count
 from pyscenic.export import export2loom
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, LocalCluster
-from arboreto.utils import load_tf_names
 from arboreto.algo import grnboost2
 from ctxcore.rnkdb import FeatherRankingDatabase as RankingDatabase
 from pyscenic.prune import prune2df, df2regulons
@@ -47,22 +45,27 @@ from stereo.core.stereo_exp_data import StereoExpData
 
 
 class RegulatoryNetwork(AlgorithmBase):
-    '''
+    """
     A gene regulatory network
-    '''
+    """
 
     logger = LogManager(log_path='project.log', level='debug').get_logger(name='Stereo')
 
     def __init__(self):
+        # input
         self.data = None
         self._genes = None  # list
+        self._cells = None # list
         self._mtx = None  # pd.DataFrame
+
+        self.tf_names = None  # list
+
+        # network calculated attributes
         self._regulons = None  # list, check
-        self.modules = None # check
+        self.modules = None  # check
         self._auc_mtx = None  # check
         self.zscore_auc_mtx = None
         self.adjacencies = None  # pd.DataFrame
-        self.tf_names = None # list
 
     @property
     def mtx(self):
@@ -81,6 +84,14 @@ class RegulatoryNetwork(AlgorithmBase):
         self._genes = value
 
     @property
+    def cells(self):
+        return self._cells
+
+    @cells.setter
+    def cells(self, value):
+        self._cells = value
+
+    @property
     def regulons(self):
         return self._regulons
 
@@ -88,26 +99,57 @@ class RegulatoryNetwork(AlgorithmBase):
     def auc_mtx(self):
         return self._auc_mtx
 
-    @classmethod
-    def is_valid_exp_matrix(cls, mtx: pd.DataFrame):
-        """check if the exp matrix is vaild for the grn pipeline"""
+    @staticmethod
+    def is_valid_exp_matrix(mtx: pd.DataFrame):
+        """
+        check if the exp matrix is valid for the grn pipeline
+        :param mtx:
+        :return:
+        """
         return (all(isinstance(idx, str) for idx in mtx.index)
                 and all(isinstance(idx, str) for idx in mtx.columns)
                 and (mtx.index.nlevels == 1)
                 and (mtx.columns.nlevels == 1))
 
-    @classmethod
-    def load_data(self, fn: str, bin_type='cell_bins'):
+    def load_data(self, data: Union[StereoExpData, anndata.AnnData]):
+        """
+
+        :param data:
+        :return:
+        """
+        self.data = data
+        if isinstance(data, StereoExpData):
+            self.genes = data.gene_names
+            self.mtx = data.exp_matrix
+            self.cells = data.cell_names
+        elif isinstance(data, anndata.AnnData):
+            self.mtx = data.X
+            self.genes = list(data.var)
+
+    def load_data_by_cluster(self, data: Union[StereoExpData, anndata.AnnData], cluster_name: str):
+        """
+
+        :param data:
+        :param cluster_name:
+        :return:
+        """
+        pass
+
+    def read_file(self, fn: str, bin_type='cell_bins'):
         """
         Loading input files, supported file formats:
             gef, gem, loom, h5ad, csv
         Recommended formats: h5ad, gef
+        :param fn:
+        :param bin_type:
+        :return:
         """
         self.logger.info('Loading expression data...')
         extension = os.path.splitext(fn)[1]
         if extension == '.csv':
             self.mtx = pd.read_csv(fn)
             self.genes = list(self.mtx.columns)
+            self.logger.info(f'is valid expr matrix {RegulatoryNetwork.is_valid_exp_matrix(self.mtx)}')
             return self.mtx, self.genes
         elif extension == '.loom':
             self.data = sc.read_loom(fn)
@@ -137,82 +179,108 @@ class RegulatoryNetwork(AlgorithmBase):
         return custom_client
 
     def grn_inference(self,
-                      num_workers: int = 6,
+                      num_workers: int,
                       verbose: bool = True,
                       fn: str = 'adj.csv') -> pd.DataFrame:
         """
         Inference of co-expression modules
+        mtx:
+           * a pandas DataFrame (rows=observations, columns=genes)
+           * a dense 2D numpy.ndarray
+           * a sparse scipy.sparse.csc_matrix
+        :param num_workers:
+        :param verbose:
+        :param fn:
+        :return:
         """
-        self.logger.info('GRN inferencing...')
-        begin1 = time.time()
+        if num_workers is None:
+            num_workers = cpu_count()
         custom_client = RegulatoryNetwork._set_client(num_workers)
         self.adjacencies = grnboost2(self.mtx,
                                      tf_names=self.tf_names,
                                      gene_names=self.genes,
                                      verbose=verbose,
                                      client_or_address=custom_client)
-        end1 = time.time()
-        self.logger.info(f'GRN inference DONE in {(end1 - begin1) // 60} min {(end1 - begin1) % 60} sec')
         self.adjacencies.to_csv(fn, index=False)  # adj.csv, don't have to save into a file
         return self.adjacencies
 
     @staticmethod
     def _name(fname: str) -> str:
+        """
+
+        :param fname:
+        :return:
+        """
         return os.path.splitext(os.path.basename(fname))[0]
 
     @classmethod
-    def load_database(cls, DATABASES_GLOB: str) -> list:
+    def load_database(cls, database_dir: str) -> list:
+        """
+
+        :param database_dir:
+        :return:
+        """
         cls.logger.info('Loading ranked databases...')
-        db_fnames = glob.glob(DATABASES_GLOB)
+        db_fnames = glob.glob(database_dir)
         dbs = [RankingDatabase(fname=fname, name=RegulatoryNetwork._name(fname)) for fname in db_fnames]
         return dbs
 
     @classmethod
-    def load_tfs(cls, fn):
-        return load_tf_names(fn)
+    def load_tfs(cls, fn: str)->list:
+        """
+
+        :param fn:
+        :return:
+        """
+        with open(fn) as file:
+            tfs_in_file = [line.strip() for line in file.readlines()]
+        return tfs_in_file
 
     def ctx_get_regulons(self,
                          rho_mask_dropouts: bool = False):
         """
         Inference of co-expression modules
+        :param rho_mask_dropouts:
+        :return:
         """
-        begin2 = time.time()
         self.modules = list(
-            modules_from_adjacencies(
-                self.adjacencies,
-                self.mtx,
-                rho_mask_dropouts=rho_mask_dropouts
-            )
+            modules_from_adjacencies(self.adjacencies, self.mtx, rho_mask_dropouts=rho_mask_dropouts)
         )
-        end2 = time.time()
-        self.logger.info(f'Regulon Prediction DONE in {(end2 - begin2) // 60} min {(end2 - begin2) % 60} sec')
-        self.logger.info(f'generated {len(self.modules)} modules')
         return self.modules
 
     def prune(self,
               dbs: list,
-              MOTIF_ANNOTATIONS_FNAME,
-              num_workers: int = 6,
+              motif_anno_fn,
+              num_workers: int,
               is_prune: bool = True,
               rgn: str = 'regulons.csv'):
         """
 
+        :param dbs:
+        :param motif_anno_fn:
+        :param num_workers:
+        :param is_prune:
+        :param rgn:
+        :return:
         """
+        if num_workers is None:
+            num_workers = cpu_count()
         if is_prune:
             with ProgressBar():
-                df = prune2df(dbs, self.modules, MOTIF_ANNOTATIONS_FNAME, num_workers=num_workers)
+                df = prune2df(dbs, self.modules, motif_anno_fn, num_workers=num_workers)
             regulons = df2regulons(df)
             df.to_csv(rgn)  # motifs filename
-
             # alternative way of getting regulons, without creating df first
-            regulons = self.prune(dbs, self.modules, MOTIF_ANNOTATIONS_FNAME)
+            regulons = self.prune(dbs, self.modules, motif_anno_fn)
             return regulons
-        else:  # TODO: warning, is_prune setted as False
-            pass
+        else:
+            warnings.warn('if prune is set to False')
 
     def regulons_to_csv(self, fn: str = 'regulons.csv'):
         """
         Save regulons (df2regulons output) into a csv file.
+        :param fn:
+        :return:
         """
         rdict = {}
         for reg in self.regulons:
@@ -227,49 +295,67 @@ class RegulatoryNetwork(AlgorithmBase):
             w.writerows(rdict.items())
 
     def auc_activity_level(self,
-                           auc_thld,
-                           num_workers,
+                           auc_threshold: float,
+                           num_workers: int,
+                           save: bool = True,
                            fn='auc.csv') -> pd.DataFrame:
-        begin4 = time.time()
-        auc_mtx = aucell(self.mtx, self.regulons, auc_threshold=auc_thld, num_workers=num_workers)
-        end4 = time.time()
-        self.logger.info(f'Cellular Enrichment DONE in {(end4 - begin4) // 60} min {(end4 - begin4) % 60} sec')
-        auc_mtx.to_csv(fn)
+        """
+
+        :param auc_threshold:
+        :param num_workers:
+        :param save:
+        :param fn:
+        :return:
+        """
+        if num_workers is None:
+            num_workers = cpu_count()
+        auc_mtx = aucell(self.mtx, self.regulons, auc_threshold=auc_threshold, num_workers=num_workers)
+        if save:
+            auc_mtx.to_csv(fn)
         return auc_mtx
 
-    def save_to_loom(self, LOOM_FILE: str = 'output.loom'):
+    def save_to_loom(self, loom_fn: str = 'output.loom'):
+        """
+
+        :param loom_fn:
+        :return:
+        """
         export2loom(ex_mtx=self.mtx, auc_mtx=self.auc_mtx,
                     regulons=[r.rename(r.name.replace('(+)', ' (' + str(len(r)) + 'g)')) for r in self.regulons],
-                    out_fname=LOOM_FILE)
+                    out_fname=loom_fn)
 
     def uniq_genes(self):
+        """
+
+        :return:
+        """
         unique_adj_genes = set(self.adjacencies["TF"]).union(set(self.adjacencies["target"])) - set(self.mtx.columns)
-        self.logger.info(f'find {len(unique_adj_genes) / len(set(self.mtx.columns))} unique genes')
+        RegulatoryNetwork.logger.info(f'find {len(unique_adj_genes) / len(set(self.mtx.columns))} unique genes')
         return unique_adj_genes
 
     def main(self):
-        RESOURCES_FOLDER = "/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/resource"
-        DATABASE_FOLDER = "/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/database/"
-        DATABASES_GLOB = os.path.join(DATABASE_FOLDER,
+        resources_folder = "/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/resource"
+        database_folder = "/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/database/"
+        databases_glob = os.path.join(database_folder,
                                       'mm10_10kbp_up_10kbp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather')
-        MOTIF_ANNOTATIONS_FNAME = os.path.join(RESOURCES_FOLDER, 'motifs/motifs-v10nr_clust-nr.mgi-m0.001-o0.0.tbl')
-        MM_TFS_FNAME = os.path.join(RESOURCES_FOLDER, 'tfs/test_mm_mgi_tfs.txt')
-        SC_EXP_FNAME = os.path.join(RESOURCES_FOLDER, 'StereopyData/SS200000135TL_D1.cellbin.gef')
+        motif_annotations_fname = os.path.join(resources_folder, 'motifs/motifs-v10nr_clust-nr.mgi-m0.001-o0.0.tbl')
+        mm_tfs_fname = os.path.join(resources_folder, 'tfs/test_mm_mgi_tfs.txt')
+        sc_exp_fname = os.path.join(resources_folder, 'StereopyData/SS200000135TL_D1.cellbin.gef')
 
         grn = RegulatoryNetwork()
         # 0. Load StereoExpData file
-        grn.load_data(SC_EXP_FNAME)
+        grn.read_file(sc_exp_fname)
         # 1. load TF list
-        tfs = grn.load_tfs(MM_TFS_FNAME)
+        grn.load_tfs(mm_tfs_fname)
         # 2. load the ranking databases
-        dbs = grn.load_database(DATABASES_GLOB)
+        dbs = grn.load_database(databases_glob)
         # 3. GRN inference
         grn.grn_inference(num_workers=24)
-        # 4. Regulon prediction aka cisTarget from CLI
+        # 4. Regulons prediction aka cisTarget
         grn.ctx_get_regulons()
-        grn.prune(dbs, MOTIF_ANNOTATIONS_FNAME, num_workers=24,)
-        # 5: Cellular enrichment (aka AUCell) from CLI
-        grn.auc_activity_level(auc_thld=0.5, num_workers=24)
+        grn.prune(dbs, motif_annotations_fname, num_workers=24)
+        # 5: Cellular enrichment (aka AUCell)
+        grn.auc_activity_level(auc_threshold=0.5, num_workers=24)
         return grn
 
 
