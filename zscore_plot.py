@@ -23,7 +23,6 @@ def plot_multi_regs(zscore, coor, target_regs):
     pass
 
 
-
 if __name__ == '__main__':
     auc_zscore = pd.read_csv('auc_zscore.csv')
     cell_coor = pd.read_csv('cell_coor.csv')
