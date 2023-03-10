@@ -49,10 +49,10 @@ from stereo.core.stereo_exp_data import StereoExpData
 
 class InferenceRegulatoryNetwork(AlgorithmBase):
     """
-    A gene regulatory network
+    Algorithms to inference Gene Regulatory Networks (GRN)
     """
 
-    def __init__(self, data):
+    def __init__(self, data, num_workers=6):
         print('call __init__ from AlgorithmBase')
         super(InferenceRegulatoryNetwork, self).__init__(data)
         # input
@@ -68,7 +68,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         self._adjacencies = None  # pd.DataFrame
 
         # other settings
-        #self._num_workers = 6
+        self._num_workers = num_workers
         #self._thld = 0.5
 
     @property
@@ -138,6 +138,14 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
     def auc_mtx(self, value):
         self._auc_mtx = value
 
+    @property
+    def num_workers(self):
+        return self._num_workers
+
+    @num_workers.setter
+    def num_workers(self, num):
+        self._num_workers = num
+
     @staticmethod
     def is_valid_exp_matrix(mtx: pd.DataFrame):
         """
@@ -150,39 +158,39 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                 and (mtx.index.nlevels == 1)
                 and (mtx.columns.nlevels == 1))
 
-    def load_data_info(self):
+    # Data loading methods
+    @staticmethod
+    def read_file(fn: str, bin_type='cell_bins'):
         """
-
-        :param data:
+        Loading input files, supported file formats:
+            * gef
+            * gem
+            * loom
+            * h5ad
+        Recommended formats:
+            * h5ad
+            * gef
+        :param fn:
+        :param bin_type:
         :return:
         """
-        if isinstance(self._data, StereoExpData):
-            self._matrix = self._data.exp_matrix
-            #self._gene_names = self._data.gene_names
-            #self._cell_names = self._data.cell_names
-        elif isinstance(self._data, anndata.AnnData):
-            self._matrix = self._data.X
-            self._gene_names = self._data.var_names
-            self._cell_names = self._data.obs_names
-
-    # @classmethod
-    # def load_anndata_by_cluster(cls, data: anndata.AnnData,
-    #                             cluster_label: str,
-    #                             target_clusters: list) -> anndata.AnnData:
-    #     """
-    #
-    #     :param data:
-    #     :param cluster_label: where the clustering results are stored
-    #     :param target_clusters: a list of interested cluster names
-    #     :return:
-    #
-    #     Example:
-    #         sub_data = load_anndata_by_cluster(data, 'psuedo_class', ['HBGLU9'])
-    #     """
-    #     if isinstance(data, anndata.AnnData):
-    #         return data[data.obs[cluster_label].isin(target_clusters)]
-    #     else:
-    #         raise TypeError('data must be anndata.Anndata object')
+        logger.info('Loading expression data...')
+        extension = os.path.splitext(fn)[1]
+        logger.info(f'file extension is {extension}')
+        if extension == '.csv':
+            logger.error('read_file method does not support csv files')
+            raise TypeError('this method does not support csv files, '
+                            'please read this file using functions outside of the InferenceRegulatoryNetwork class, '
+                            'e.g. pandas.read_csv')
+        elif extension == '.loom':
+            data = sc.read_loom(fn)
+            return data
+        elif extension == '.h5ad':
+            data = sc.read_h5ad(fn)
+            return data
+        elif extension == '.gef':
+            data = read_gef(file_path=fn, bin_type=bin_type)
+            return data
 
     @staticmethod
     def load_anndata_by_cluster(fn: str,
@@ -219,39 +227,20 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         """
         return data.exp_matrix[meta[cluster_label].isin(target_clusters)]
 
-    @staticmethod
-    def read_file(fn: str, bin_type='cell_bins'):
+    def load_data_info(self):
         """
-        Loading input files, supported file formats:
-            * gef
-            * gem
-            * loom
-            * h5ad
-        Recommended formats:
-            * h5ad
-            * gef
-        :param fn:
-        :param bin_type:
+
+        :param data:
         :return:
         """
-        logger.info('Loading expression data...')
-        extension = os.path.splitext(fn)[1]
-        logger.info(f'file extension is {extension}')
-        if extension == '.csv':
-            logger.error('read_file method does not support csv files')
-            raise TypeError('this method does not support csv files, '
-                            'please read this file using functions outside of the InferenceRegulatoryNetwork class, '
-                            'e.g. pandas.read_csv')
-        elif extension == '.loom':
-            data = sc.read_loom(fn)
-            return data
-        elif extension == '.h5ad':
-            data = sc.read_h5ad(fn)
-            return data
-        elif extension == '.gef':
-            data = read_gef(file_path=fn, bin_type=bin_type)
-            return data
+        if isinstance(self._data, StereoExpData):
+            self._matrix = self._data.exp_matrix
+        elif isinstance(self._data, anndata.AnnData):
+            self._matrix = self._data.X
+            self._gene_names = self._data.var_names
+            self._cell_names = self._data.obs_names
 
+    # Gene Regulatory Network inference methods
     @staticmethod
     def _set_client(num_workers: int) -> Client:
         """
@@ -295,6 +284,20 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                                 client_or_address=custom_client)
         adjacencies.to_csv(fn, index=False)  # adj.csv, don't have to save into a file
         return adjacencies
+
+    @classmethod
+    def uniq_genes(cls, adjacencies, matrix: pd.DataFrame):
+        """
+
+        :param adjacencies:
+        :param matrix:
+        :return:
+        """
+        assert isinstance(matrix, pd.DataFrame)
+
+        unique_adj_genes = set(adjacencies["TF"]).union(set(adjacencies["target"])) - set(matrix.columns)
+        logger.info(f'find {len(unique_adj_genes) / len(set(cls.mtx.columns))} unique genes')
+        return unique_adj_genes
 
     @staticmethod
     def _name(fname: str) -> str:
@@ -380,25 +383,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             warnings.warn('if prune_modules is set to False')
 
     @classmethod
-    def regulons_to_csv(cls, regulons, fn: str = 'regulons.csv'):
-        """
-        Save regulons (df2regulons output) into a csv file.
-        :param fn:
-        :return:
-        """
-        rdict = {}
-        for reg in regulons:
-            targets = [target for target in reg.gene2weight]
-            rdict[reg.name] = targets
-        # Optional: join list of target genes
-        for key in rdict.keys(): rdict[key] = ";".join(rdict[key])
-        # Write to csv file
-        with open(fn, 'w') as f:
-            w = csv.writer(f)
-            w.writerow(["Regulons", "Target_genes"])
-            w.writerows(rdict.items())
-
-    @classmethod
     def auc_activity_level(cls,
                            matrix,
                            regulons,
@@ -425,6 +409,26 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         if save:
             auc_mtx.to_csv(fn)
         return auc_mtx
+
+    # Data saving methods
+    @classmethod
+    def regulons_to_csv(cls, regulons, fn: str = 'regulons.csv'):
+        """
+        Save regulons (df2regulons output) into a csv file.
+        :param fn:
+        :return:
+        """
+        rdict = {}
+        for reg in regulons:
+            targets = [target for target in reg.gene2weight]
+            rdict[reg.name] = targets
+        # Optional: join list of target genes
+        for key in rdict.keys(): rdict[key] = ";".join(rdict[key])
+        # Write to csv file
+        with open(fn, 'w') as f:
+            w = csv.writer(f)
+            w.writerow(["Regulons", "Target_genes"])
+            w.writerows(rdict.items())
 
     @classmethod
     def save_to_loom(cls, matrix, auc_matrix, regulons, loom_fn: str = 'output.loom'):
@@ -462,31 +466,18 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         sub_df = sub_adj[sub_adj.target.isin(targets)]
         sub_df.to_csv(fn, index=False, sep='\t')
 
-    @classmethod
-    def uniq_genes(cls, adjacencies, matrix: pd.DataFrame):
-        """
-
-        :param adjacencies:
-        :param matrix:
-        :return:
-        """
-        assert isinstance(matrix, pd.DataFrame)
-
-        unique_adj_genes = set(adjacencies["TF"]).union(set(adjacencies["target"])) - set(matrix.columns)
-        logger.info(f'find {len(unique_adj_genes) / len(set(cls.mtx.columns))} unique genes')
-        return unique_adj_genes
-
-    @classmethod
+    # GRN pipeline main logic
     def main(self,
-             data: Union[StereoExpData, anndata.AnnData],
              databases: str,
              motif_anno_fn: str,
              tfs_fn,
-             num_workers: int,
-             target_genes):
+             target_genes=None):
         """"""
-        matrix, genes = self.load_data_info(data)
-
+        #matrix, genes = InferenceRegulatoryNetwork.load_data_info(data)
+        self.load_data_info()
+        matrix = self._matrix
+        genes = self._gene_names
+        num_workers = self._num_workers
         # assert isinstance(matrix, scipy.sparse.csc_matrix)
 
         if target_genes is None:
