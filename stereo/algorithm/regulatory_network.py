@@ -52,16 +52,15 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
     Algorithms to inference Gene Regulatory Networks (GRN)
     """
 
-    def __init__(self, data, num_workers=6):
-        print('call __init__ from AlgorithmBase')
+    def __init__(self, data, num_workers=6, auc_thld=0.5):
         super(InferenceRegulatoryNetwork, self).__init__(data)
         # input
         self._data = data
         self._matrix = None  # pd.DataFrame
         self._gene_names = []
         self._cell_names = []
-
         self._tfs = []
+
         # network calculated attributes
         self._regulons = None  # list, check
         self._auc_mtx = None  # check
@@ -69,7 +68,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
 
         # other settings
         self._num_workers = num_workers
-        #self._thld = 0.5
+        self._thld = auc_thld
 
     @property
     def data(self):
@@ -77,15 +76,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
 
     @data.setter
     def data(self, data: Union[StereoExpData, anndata.AnnData]):
-        """
-
-        :param data:
-        :return:
-        """
         self._data = data
         if isinstance(data, StereoExpData):
             self._matrix = data.exp_matrix
-            self._gene_names = data.gene_names
         elif isinstance(data, anndata.AnnData):
             self._matrix = data.X
             self._gene_names = data.var_names
@@ -103,16 +96,16 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         return self._gene_names
 
     @gene_names.setter
-    def gene_names(self, names):
-        self._gene_names = names
+    def gene_names(self, value):
+        self._gene_names = value
 
     @property
     def cell_names(self):
         return self._cell_names
 
     @cell_names.setter
-    def cell_names(self, names):
-        self._cell_names = names
+    def cell_names(self, value):
+        self._cell_names = value
 
     @property
     def adjacencies(self):
@@ -143,8 +136,16 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         return self._num_workers
 
     @num_workers.setter
-    def num_workers(self, num):
-        self._num_workers = num
+    def num_workers(self, value):
+        self._num_workers = value
+
+    @property
+    def thld(self):
+        return self._thld
+
+    @thld.setter
+    def thld(self, value):
+        self._thld = value
 
     @staticmethod
     def is_valid_exp_matrix(mtx: pd.DataFrame):
@@ -212,8 +213,8 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         else:
             raise TypeError('data must be anndata.Anndata object')
 
-    @classmethod
-    def load_stdata_by_cluster(cls, data: StereoExpData,
+    @staticmethod
+    def load_stdata_by_cluster(data: StereoExpData,
                                meta: pd.DataFrame,
                                cluster_label: str,
                                target_clusters: list) -> scipy.sparse.csc_matrix:
@@ -252,8 +253,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         custom_client = Client(local_cluster)
         return custom_client
 
-    @classmethod
-    def grn_inference(cls,
+    def grn_inference(self,
                       matrix,
                       tf_names: list,
                       genes,
@@ -285,18 +285,16 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         adjacencies.to_csv(fn, index=False)  # adj.csv, don't have to save into a file
         return adjacencies
 
-    @classmethod
-    def uniq_genes(cls, adjacencies, matrix: pd.DataFrame):
+    def uniq_genes(self, adjacencies):
         """
 
         :param adjacencies:
-        :param matrix:
         :return:
         """
-        assert isinstance(matrix, pd.DataFrame)
-
-        unique_adj_genes = set(adjacencies["TF"]).union(set(adjacencies["target"])) - set(matrix.columns)
-        logger.info(f'find {len(unique_adj_genes) / len(set(cls.mtx.columns))} unique genes')
+        #assert isinstance(matrix, pd.DataFrame)
+        df = self._data.to_df()
+        unique_adj_genes = set(adjacencies["TF"]).union(set(adjacencies["target"])) - set(df.columns)
+        logger.info(f'find {len(unique_adj_genes) / len(set(df.columns))} unique genes')
         return unique_adj_genes
 
     @staticmethod
@@ -308,8 +306,8 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         """
         return os.path.splitext(os.path.basename(fname))[0]
 
-    @classmethod
-    def load_database(cls, database_dir: str) -> list:
+    @staticmethod
+    def load_database(database_dir: str) -> list:
         """
 
         :param database_dir:
@@ -320,8 +318,8 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         dbs = [RankingDatabase(fname=fname, name=InferenceRegulatoryNetwork._name(fname)) for fname in db_fnames]
         return dbs
 
-    @classmethod
-    def load_tfs(cls, fn: str) -> list:
+    @staticmethod
+    def load_tfs(fn: str) -> list:
         """
 
         :param fn:
@@ -331,11 +329,10 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             tfs_in_file = [line.strip() for line in file.readlines()]
         return tfs_in_file
 
-    @classmethod
-    def ctx_get_regulons(cls,
-                         adjacencies,
-                         matrix,
-                         rho_mask_dropouts: bool = False):
+    def get_modules(self,
+                    adjacencies,
+                    matrix,
+                    rho_mask_dropouts: bool = False):
         """
         Inference of co-expression modules
 
@@ -352,16 +349,17 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         )
         return modules
 
-    @classmethod
-    def prune_modules(cls,
+    def prune_modules(self,
                       modules,
                       dbs: list,
                       motif_anno_fn,
                       num_workers: int,
                       is_prune: bool = True,
-                      rgn: str = 'regulons.csv'):
+                      rgn: str = 'motifs.csv'):
         """
-
+        First, calculate a list of enriched motifs and the corresponding target genes for all modules.
+        Then, create regulons from this table of enriched motifs.
+        :param modules:
         :param dbs:
         :param motif_anno_fn:
         :param num_workers:
@@ -380,10 +378,10 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             # regulons = prune(dbs, modules, motif_anno_fn)
             return regulons
         else:
-            warnings.warn('if prune_modules is set to False')
+            # warnings.warn('if prune_modules is set to False')
+            logger.warning('if prune_modules is set to False')
 
-    @classmethod
-    def auc_activity_level(cls,
+    def auc_activity_level(self,
                            matrix,
                            regulons,
                            auc_threshold: float,
@@ -411,8 +409,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         return auc_mtx
 
     # Data saving methods
-    @classmethod
-    def regulons_to_csv(cls, regulons, fn: str = 'regulons.csv'):
+    def regulons_to_csv(self, regulons, fn: str = 'regulons.csv'):
         """
         Save regulons (df2regulons output) into a csv file.
         :param fn:
@@ -430,8 +427,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             w.writerow(["Regulons", "Target_genes"])
             w.writerows(rdict.items())
 
-    @classmethod
-    def save_to_loom(cls, matrix, auc_matrix, regulons, loom_fn: str = 'output.loom'):
+    def save_to_loom(self, matrix, auc_matrix, regulons, loom_fn: str = 'output.loom'):
         """
 
         :param matrix:
@@ -444,8 +440,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                     regulons=[r.rename(r.name.replace('(+)', ' (' + str(len(r)) + 'g)')) for r in regulons],
                     out_fname=loom_fn)
 
-    @classmethod
-    def save_to_cytoscape(cls,
+    def save_to_cytoscape(self,
                           regulons: list,
                           adjacencies: pd.DataFrame,
                           tf: str,
@@ -472,10 +467,18 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
              motif_anno_fn: str,
              tfs_fn,
              target_genes=None):
-        """"""
-        #matrix, genes = InferenceRegulatoryNetwork.load_data_info(data)
+        """
+
+        :param databases:
+        :param motif_anno_fn:
+        :param tfs_fn:
+        :param target_genes:
+        :return:
+        """
+        # matrix, genes = InferenceRegulatoryNetwork.load_data_info(data)
         self.load_data_info()
         matrix = self._matrix
+        df = self._data.to_df()
         genes = self._gene_names
         num_workers = self._num_workers
         # assert isinstance(matrix, scipy.sparse.csc_matrix)
@@ -493,11 +496,11 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         dbs = self.load_database(databases)
         # 3. GRN inference
         adjacencies = self.grn_inference(matrix, genes=target_genes, tf_names=tfs, num_workers=num_workers)
+        modules = self.get_modules(adjacencies, df)
         # 4. Regulons prediction aka cisTarget
-        modules = self.ctx_get_regulons(adjacencies, matrix)
         regulons = self.prune_modules(modules, dbs, motif_anno_fn, num_workers=24)
         # 5: Cellular enrichment (aka AUCell)
-        auc_mtx = self.auc_activity_level(matrix, regulons, auc_threshold=0.5, num_workers=num_workers)
+        auc_mtx = self.auc_activity_level(df, regulons, auc_threshold=0.5, num_workers=num_workers)
         return adjacencies, regulons, auc_mtx
 
 
@@ -588,7 +591,7 @@ class PlotRegulatoryNetwork(PlotBase):
         """
         plt.figsize = (8, 8)
         sns.clustermap(auc_mtx)
-        plt.tightlayout()
+        plt.tight_layout()
         plt.savefig(fn)
 
     @staticmethod
