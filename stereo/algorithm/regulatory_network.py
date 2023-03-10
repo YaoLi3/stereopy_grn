@@ -19,6 +19,7 @@ import warnings
 from typing import Union
 
 # third party modules
+import json
 import glob
 import anndata
 import scipy.sparse
@@ -380,21 +381,38 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             # warnings.warn('if prune_modules is set to False')
             logger.warning('if prune_modules is set to False')
 
-    # use function from pyscenic for parsing the 'pyscenic ctx' output
-    def _df2regulons(self, fname):
-        ext = os.path.splitext(fname, )[1]
+    def read_motif_file(self, fname):
         df = pd.read_csv(fname, sep=',', index_col=[0, 1], header=[0, 1], skipinitialspace=True)
+        return df
+
+    # use function from pyscenic for parsing the 'pyscenic ctx' output
+    def _df2regulons(self, df):
         df[('Enrichment', 'Context')] = df[('Enrichment', 'Context')].apply(lambda s: eval(s))
         df[('Enrichment', 'TargetGenes')] = df[('Enrichment', 'TargetGenes')].apply(lambda s: eval(s))
         return df2regulons(df)
 
-    def get_regulon_dict(self):
-        # Form dictionary of { TF : Target } pairs from 'pyscenic ctx' output.
+    def get_regulon_dict(self, df):
+        """
+        Form dictionary of { TF : Target } pairs from 'pyscenic ctx' output.
+        :param df:
+        :return:
+        """
         rdict = {}
-        regulons = _df2regulons('joint_ctx.csv')
+        regulons = self._df2regulons(df)
         for reg in regulons:
             targets = [target for target in reg.gene2weight]
             rdict[reg.name] = targets
+        return rdict
+
+    def save_regulons_to_json(self, rdict, fn='regulons.json'):
+        """
+        Write regulon dictionary into json file
+        :param rdict:
+        :param fn:
+        :return:
+        """
+        with open(fn, 'w') as f:
+            json.dump(rdict, f, indent=4)
 
     def auc_activity_level(self,
                            matrix,
@@ -457,7 +475,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                     out_fname=loom_fn)
 
     def save_to_cytoscape(self,
-                          regulons: list,
+                          rdict: dict,
                           adjacencies: pd.DataFrame,
                           tf: str,
                           fn: str = 'cyto.txt'):
@@ -472,7 +490,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         """
         # get TF data
         sub_adj = adjacencies[adjacencies.TF == tf]
-        targets = regulons[tf]
+        targets = rdict[tf]
         # all the target genes of the TF
         sub_df = sub_adj[sub_adj.target.isin(targets)]
         sub_df.to_csv(fn, index=False, sep='\t')
