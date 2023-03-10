@@ -40,10 +40,10 @@ from pyscenic.rss import regulon_specificity_scores
 from pyscenic.aucell import aucell
 
 # modules in self project
-from ..log_manager import logger
-from .algorithm_base import AlgorithmBase
+from log_manager import logger
+from algorithm_base import AlgorithmBase
 from stereo.io.reader import read_gef
-from ..plots.plot_base import PlotBase
+from plot_base import PlotBase
 from stereo.core.stereo_exp_data import StereoExpData
 
 
@@ -52,11 +52,11 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
     A gene regulatory network
     """
 
-    def __init__(self):
+    def __init__(self, data):
         print('call __init__ from AlgorithmBase')
-        super(InferenceRegulatoryNetwork, self).__init__()
+        super(InferenceRegulatoryNetwork, self).__init__(data)
         # input
-        self._data = None
+        self._data = data
         self._matrix = None  # pd.DataFrame
         # network calculated attributes
         self._regulons = None  # list, check
@@ -150,8 +150,8 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         """
         return data.exp_matrix[meta[cluster_label].isin(target_clusters)]
 
-    @classmethod
-    def read_file(cls, fn: str, bin_type='cell_bins'):
+    @staticmethod
+    def read_file(fn: str, bin_type='cell_bins'):
         """
         Loading input files, supported file formats:
             * gef
@@ -168,26 +168,30 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         """
         logger.info('Loading expression data...')
         extension = os.path.splitext(fn)[1]
+        logger.info(f'file extension is {extension}')
         if extension == '.csv':
-            cls.mtx = pd.read_csv(fn)
-            cls.genes = list(cls.mtx.columns)
+            mtx = pd.read_csv(fn)
+            genes = list(mtx.columns)
             #logger.info(f'is valid expr matrix {InferenceRegulatoryNetwork.is_valid_exp_matrix(cls._matrix)}')
-            return cls.mtx, cls.genes
+            return mtx, genes
         elif extension == '.loom':
-            cls.data = sc.read_loom(fn)
-            cls.genes = list(cls.data.var_names)
-            cls.mtx = cls.data.X
-            return cls.mtx, cls.genes
-        elif extension == 'h5ad':
-            cls.data = sc.read_h5ad(fn)
-            cls.genes = list(cls.data.var_names)
-            cls.mtx = cls.data.X
-            return cls.mtx, cls.genes
+            data = sc.read_loom(fn)
+            #cls.genes = list(cls.data.var_names)
+            #cls.mtx = cls.data.X
+            #return cls.mtx, cls.genes
+            return data
+        elif extension == '.h5ad':
+            data = sc.read_h5ad(fn)
+            #cls.genes = list(cls.data.var_names)
+            #cls.mtx = cls.data.X
+            #return cls.mtx, cls.genes
+            return data
         elif extension == '.gef':
-            cls.data = read_gef(file_path=fn, bin_type=bin_type)
-            cls.genes = cls.data.gene_names
-            cls.mtx = cls.data.to_df()
-            return cls.mtx, cls.genes
+            data = read_gef(file_path=fn, bin_type=bin_type)
+            #cls.genes = cls.data.gene_names
+            #cls.mtx = cls.data.to_df()
+            #return cls.mtx, cls.genes
+            return data
 
     @staticmethod
     def _set_client(num_workers: int) -> Client:
