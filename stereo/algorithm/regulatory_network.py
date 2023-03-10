@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-'''
+"""
 @file: regulatory_network.py
 @time: 2023/Jan/08
 @description: inference gene regulatory networks
@@ -10,7 +10,7 @@
 
 change log:
     2023/01/08 init
-'''
+"""
 
 # python core modules
 import os
@@ -150,20 +150,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                 and (mtx.index.nlevels == 1)
                 and (mtx.columns.nlevels == 1))
 
-    # def load_data_info(self, data: Union[StereoExpData, anndata.AnnData]):
-    #     """
-    #
-    #     :param data:
-    #     :return:
-    #     """
-    #     self._data = data
-    #     if isinstance(data, StereoExpData):
-    #         self.matrix = data.exp_matrix
-    #         return data.exp_matrix, data.gene_names
-    #     elif isinstance(data, anndata.AnnData):
-    #         self.matrix = data.X
-    #         return data.X, data.var_names
-
     def load_data_info(self):
         """
 
@@ -172,32 +158,57 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         """
         if isinstance(self._data, StereoExpData):
             self._matrix = self._data.exp_matrix
-            self._gene_names = self._data.gene_names
-            #return self._data.exp_matrix, self._data.gene_names
+            #self._gene_names = self._data.gene_names
+            #self._cell_names = self._data.cell_names
         elif isinstance(self._data, anndata.AnnData):
             self._matrix = self._data.X
             self._gene_names = self._data.var_names
-            #return self._data.X, self._data.var_names
+            self._cell_names = self._data.obs_names
 
-    @classmethod
-    def load_anndata_by_cluster(cls, data: anndata.AnnData,
+    # @classmethod
+    # def load_anndata_by_cluster(cls, data: anndata.AnnData,
+    #                             cluster_label: str,
+    #                             target_clusters: list) -> anndata.AnnData:
+    #     """
+    #
+    #     :param data:
+    #     :param cluster_label: where the clustering results are stored
+    #     :param target_clusters: a list of interested cluster names
+    #     :return:
+    #
+    #     Example:
+    #         sub_data = load_anndata_by_cluster(data, 'psuedo_class', ['HBGLU9'])
+    #     """
+    #     if isinstance(data, anndata.AnnData):
+    #         return data[data.obs[cluster_label].isin(target_clusters)]
+    #     else:
+    #         raise TypeError('data must be anndata.Anndata object')
+
+    @staticmethod
+    def load_anndata_by_cluster(fn: str,
                                 cluster_label: str,
                                 target_clusters: list) -> anndata.AnnData:
         """
 
-        :param data:
-        :param cluster_label:
-        :param target_clusters:
+        :param fn:
+        :param cluster_label: where the clustering results are stored
+        :param target_clusters: a list of interested cluster names
         :return:
+
+        Example:
+            sub_data = load_anndata_by_cluster(data, 'psuedo_class', ['HBGLU9'])
         """
+        data = InferenceRegulatoryNetwork.read_file(fn)
         if isinstance(data, anndata.AnnData):
             return data[data.obs[cluster_label].isin(target_clusters)]
+        else:
+            raise TypeError('data must be anndata.Anndata object')
 
     @classmethod
-    def load_data_by_cluster(cls, data: StereoExpData,
-                             meta: pd.DataFrame,
-                             cluster_label: str,
-                             target_clusters: list) -> scipy.sparse.csc_matrix:
+    def load_stdata_by_cluster(cls, data: StereoExpData,
+                               meta: pd.DataFrame,
+                               cluster_label: str,
+                               target_clusters: list) -> scipy.sparse.csc_matrix:
         """
 
         :param cluster_label:
@@ -231,27 +242,14 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             raise TypeError('this method does not support csv files, '
                             'please read this file using functions outside of the InferenceRegulatoryNetwork class, '
                             'e.g. pandas.read_csv')
-            #mtx = pd.read_csv(fn)
-            #genes = list(mtx.columns)
-            #logger.info(f'is valid expr matrix {InferenceRegulatoryNetwork.is_valid_exp_matrix(cls._matrix)}')
-            #return mtx, genes
         elif extension == '.loom':
             data = sc.read_loom(fn)
-            #cls.genes = list(cls.data.var_names)
-            #cls.mtx = cls.data.X
-            #return cls.mtx, cls.genes
             return data
         elif extension == '.h5ad':
             data = sc.read_h5ad(fn)
-            #cls.genes = list(cls.data.var_names)
-            #cls.mtx = cls.data.X
-            #return cls.mtx, cls.genes
             return data
         elif extension == '.gef':
             data = read_gef(file_path=fn, bin_type=bin_type)
-            #cls.genes = cls.data.gene_names
-            #cls.mtx = cls.data.to_df()
-            #return cls.mtx, cls.genes
             return data
 
     @staticmethod
