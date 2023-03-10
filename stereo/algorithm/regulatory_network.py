@@ -58,10 +58,37 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         # input
         self._data = data
         self._matrix = None  # pd.DataFrame
+        self._gene_names = []
+        self._cell_names = []
+
+        self._tfs = []
         # network calculated attributes
         self._regulons = None  # list, check
         self._auc_mtx = None  # check
         self._adjacencies = None  # pd.DataFrame
+
+        # other settings
+        #self._num_workers = 6
+        #self._thld = 0.5
+
+    @property
+    def data(self):
+        return self._data
+
+    @data.setter
+    def data(self, data: Union[StereoExpData, anndata.AnnData]):
+        """
+
+        :param data:
+        :return:
+        """
+        self._data = data
+        if isinstance(data, StereoExpData):
+            self._matrix = data.exp_matrix
+            self._gene_names = data.gene_names
+        elif isinstance(data, anndata.AnnData):
+            self._matrix = data.X
+            self._gene_names = data.var_names
 
     @property
     def matrix(self):
@@ -72,11 +99,27 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         self._matrix = value
 
     @property
+    def gene_names(self):
+        return self._gene_names
+
+    @gene_names.setter
+    def gene_names(self, names):
+        self._gene_names = names
+
+    @property
+    def cell_names(self):
+        return self._cell_names
+
+    @cell_names.setter
+    def cell_names(self, names):
+        self._cell_names = names
+
+    @property
     def adjacencies(self):
         return self._adjacencies
 
     @adjacencies.setter
-    def genes(self, value):
+    def adjacencies(self, value):
         self._adjacencies = value
 
     @property
@@ -107,19 +150,34 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                 and (mtx.index.nlevels == 1)
                 and (mtx.columns.nlevels == 1))
 
-    def set_data(self, data: Union[StereoExpData, anndata.AnnData]):
+    # def load_data_info(self, data: Union[StereoExpData, anndata.AnnData]):
+    #     """
+    #
+    #     :param data:
+    #     :return:
+    #     """
+    #     self._data = data
+    #     if isinstance(data, StereoExpData):
+    #         self.matrix = data.exp_matrix
+    #         return data.exp_matrix, data.gene_names
+    #     elif isinstance(data, anndata.AnnData):
+    #         self.matrix = data.X
+    #         return data.X, data.var_names
+
+    def load_data_info(self):
         """
 
         :param data:
         :return:
         """
-        self.data = data
-        if isinstance(data, StereoExpData):
-            self.matrix = data.exp_matrix
-            return data.exp_matrix, data.gene_names
-        elif isinstance(data, anndata.AnnData):
-            self.matrix = data.X
-            return data.X, data.var_names
+        if isinstance(self._data, StereoExpData):
+            self._matrix = self._data.exp_matrix
+            self._gene_names = self._data.gene_names
+            #return self._data.exp_matrix, self._data.gene_names
+        elif isinstance(self._data, anndata.AnnData):
+            self._matrix = self._data.X
+            self._gene_names = self._data.var_names
+            #return self._data.X, self._data.var_names
 
     @classmethod
     def load_anndata_by_cluster(cls, data: anndata.AnnData,
@@ -158,7 +216,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             * gem
             * loom
             * h5ad
-            * csv
         Recommended formats:
             * h5ad
             * gef
@@ -170,10 +227,14 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         extension = os.path.splitext(fn)[1]
         logger.info(f'file extension is {extension}')
         if extension == '.csv':
-            mtx = pd.read_csv(fn)
-            genes = list(mtx.columns)
+            logger.error('read_file method does not support csv files')
+            raise TypeError('this method does not support csv files, '
+                            'please read this file using functions outside of the InferenceRegulatoryNetwork class, '
+                            'e.g. pandas.read_csv')
+            #mtx = pd.read_csv(fn)
+            #genes = list(mtx.columns)
             #logger.info(f'is valid expr matrix {InferenceRegulatoryNetwork.is_valid_exp_matrix(cls._matrix)}')
-            return mtx, genes
+            #return mtx, genes
         elif extension == '.loom':
             data = sc.read_loom(fn)
             #cls.genes = list(cls.data.var_names)
@@ -426,7 +487,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
              num_workers: int,
              target_genes):
         """"""
-        matrix, genes = self.set_data(data)
+        matrix, genes = self.load_data_info(data)
 
         # assert isinstance(matrix, scipy.sparse.csc_matrix)
 
