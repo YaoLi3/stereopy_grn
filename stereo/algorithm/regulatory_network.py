@@ -52,7 +52,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
     Algorithms to inference Gene Regulatory Networks (GRN)
     """
 
-    def __init__(self, data, num_workers=6, auc_thld=0.5):
+    def __init__(self, data):
         super(InferenceRegulatoryNetwork, self).__init__(data)
         # input
         self._data = data
@@ -67,8 +67,8 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         self._adjacencies = None  # pd.DataFrame
 
         # other settings
-        self._num_workers = num_workers
-        self._thld = auc_thld
+        #self._num_workers = num_workers
+        #self._thld = auc_thld
 
     @property
     def data(self):
@@ -131,21 +131,21 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
     def auc_mtx(self, value):
         self._auc_mtx = value
 
-    @property
-    def num_workers(self):
-        return self._num_workers
-
-    @num_workers.setter
-    def num_workers(self, value):
-        self._num_workers = value
-
-    @property
-    def thld(self):
-        return self._thld
-
-    @thld.setter
-    def thld(self, value):
-        self._thld = value
+    # @property
+    # def num_workers(self):
+    #     return self._num_workers
+    #
+    # @num_workers.setter
+    # def num_workers(self, value):
+    #     self._num_workers = value
+    #
+    # @property
+    # def thld(self):
+    #     return self._thld
+    #
+    # @thld.setter
+    # def thld(self, value):
+    #     self._thld = value
 
     @staticmethod
     def is_valid_exp_matrix(mtx: pd.DataFrame):
@@ -291,7 +291,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         :param adjacencies:
         :return:
         """
-        #assert isinstance(matrix, pd.DataFrame)
         df = self._data.to_df()
         unique_adj_genes = set(adjacencies["TF"]).union(set(adjacencies["target"])) - set(df.columns)
         logger.info(f'find {len(unique_adj_genes) / len(set(df.columns))} unique genes')
@@ -381,6 +380,22 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             # warnings.warn('if prune_modules is set to False')
             logger.warning('if prune_modules is set to False')
 
+    # use function from pyscenic for parsing the 'pyscenic ctx' output
+    def _df2regulons(self, fname):
+        ext = os.path.splitext(fname, )[1]
+        df = pd.read_csv(fname, sep=',', index_col=[0, 1], header=[0, 1], skipinitialspace=True)
+        df[('Enrichment', 'Context')] = df[('Enrichment', 'Context')].apply(lambda s: eval(s))
+        df[('Enrichment', 'TargetGenes')] = df[('Enrichment', 'TargetGenes')].apply(lambda s: eval(s))
+        return df2regulons(df)
+
+    def get_regulon_dict(self):
+        # Form dictionary of { TF : Target } pairs from 'pyscenic ctx' output.
+        rdict = {}
+        regulons = _df2regulons('joint_ctx.csv')
+        for reg in regulons:
+            targets = [target for target in reg.gene2weight]
+            rdict[reg.name] = targets
+
     def auc_activity_level(self,
                            matrix,
                            regulons,
@@ -407,6 +422,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         if save:
             auc_mtx.to_csv(fn)
         return auc_mtx
+
 
     # Data saving methods
     def regulons_to_csv(self, regulons, fn: str = 'regulons.csv'):
@@ -466,25 +482,28 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
              databases: str,
              motif_anno_fn: str,
              tfs_fn,
-             target_genes=None):
+             target_genes=None,
+             num_workers=None):
         """
 
+        :param num_workers:
         :param databases:
         :param motif_anno_fn:
         :param tfs_fn:
         :param target_genes:
         :return:
         """
-        # matrix, genes = InferenceRegulatoryNetwork.load_data_info(data)
+        # 0. set param values
         self.load_data_info()
+
         matrix = self._matrix
         df = self._data.to_df()
-        genes = self._gene_names
-        num_workers = self._num_workers
-        # assert isinstance(matrix, scipy.sparse.csc_matrix)
+
+        if num_workers is None:
+            num_workers = cpu_count()
 
         if target_genes is None:
-            target_genes = genes
+            target_genes = self._gene_names
 
         # 1. load TF list
         if tfs_fn is None:
@@ -582,14 +601,16 @@ class PlotRegulatoryNetwork(PlotBase):
             print('for StereoExpData object, please use function: dotplot_stereo')
 
     @staticmethod
-    def auc_heatmap(auc_mtx, fn='auc_heatmap.png'):
+    def auc_heatmap(auc_mtx, width=8, height=8, fn='auc_heatmap.png'):
         """
 
+        :param height:
+        :param width:
         :param auc_mtx:
         :param fn:
         :return:
         """
-        plt.figsize = (8, 8)
+        plt.figsize = (width, height)
         sns.clustermap(auc_mtx)
         plt.tight_layout()
         plt.savefig(fn)
