@@ -60,6 +60,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         self._matrix = None  # pd.DataFrame
         self._gene_names = []
         self._cell_names = []
+
+        self.load_data_info()
+
         self._tfs = []
 
         # network calculated attributes
@@ -83,6 +86,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         elif isinstance(data, anndata.AnnData):
             self._matrix = data.X
             self._gene_names = data.var_names
+            self._cell_names = self._data.obs_names
 
     @property
     def matrix(self):
@@ -152,6 +156,8 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         """"""
         if isinstance(self._data, StereoExpData):
             self._matrix = self._data.exp_matrix
+            self._gene_names = self._data.gene_names
+            self._cell_names = self._data.cell_names
         elif isinstance(self._data, anndata.AnnData):
             self._matrix = self._data.X
             self._gene_names = self._data.var_names
@@ -252,6 +258,8 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         :return:
         """
         df = pd.read_csv(fname, sep=',', index_col=[0, 1], header=[0, 1], skipinitialspace=True)
+        df[('Enrichment', 'Context')] = df[('Enrichment', 'Context')].apply(lambda s: eval(s))
+        df[('Enrichment', 'TargetGenes')] = df[('Enrichment', 'TargetGenes')].apply(lambda s: eval(s))
         return df
 
     @staticmethod
@@ -283,6 +291,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                       genes: list,
                       num_workers: int,
                       verbose: bool = True,
+                      cache: bool = True,
                       save: bool = True,
                       fn: str = 'adj.csv') -> pd.DataFrame:
         """
@@ -302,6 +311,14 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         Example:
 
         """
+        if cache and os.path.isfile(fn):
+            logger.info(f'cached file {fn} found')
+            adjacencies = pd.read_csv(fn)
+            self.adjacencies = adjacencies
+            return adjacencies
+        else:
+            logger.info('cached file not found, running grnboost2 now')
+
         if num_workers is None:
             num_workers = cpu_count()
         custom_client = InferenceRegulatoryNetwork._set_client(num_workers)
@@ -373,8 +390,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                       motif_anno_fn: str,
                       num_workers: int,
                       is_prune: bool = True,
+                      cache: bool = True,
                       save: bool = True,
-                      rgn: str = 'motifs.csv'):
+                      fn: str = 'motifs.csv'):
         """
         First, calculate a list of enriched motifs and the corresponding target genes for all modules.
         Then, create regulon_list from this table of enriched motifs.
@@ -383,16 +401,28 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         :param motif_anno_fn:
         :param num_workers:
         :param is_prune:
+        :param cache:
         :param save:
-        :param rgn:
+        :param fn:
         :return:
         """
+        if cache and os.path.isfile(fn):
+            logger.info(f'cached file {fn} found')
+            df = self.read_motif_file(fn)
+            regulon_list = df2regulons(df)
+            # alternative:
+            #regulon_list = load_signatures(fn)
+            #self.regulon_list = regulon_list
+            return regulon_list
+        else:
+            logger.info('cached file not found, running prune modules now')
+
         if num_workers is None:
             num_workers = cpu_count()
         if is_prune:
             with ProgressBar():
                 df = prune2df(dbs, modules, motif_anno_fn, num_workers=num_workers)
-                df.to_csv(rgn)  # motifs filename
+                df.to_csv(fn)  # motifs filename
             regulon_list = df2regulons(df)
             self.regulon_list = regulon_list
 
@@ -405,13 +435,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         else:
             # warnings.warn('if prune_modules is set to False')
             logger.warning('if prune_modules is set to False')
-
-    @staticmethod
-    def _df2regulons(df):
-        """use function from pyscenic for parsing the 'pyscenic ctx' output"""
-        df[('Enrichment', 'Context')] = df[('Enrichment', 'Context')].apply(lambda s: eval(s))
-        df[('Enrichment', 'TargetGenes')] = df[('Enrichment', 'TargetGenes')].apply(lambda s: eval(s))
-        return df2regulons(df)
 
     @staticmethod
     def get_regulon_dict(regulon_list: list) -> dict:
@@ -431,6 +454,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                            regulons: list,
                            auc_threshold: float,
                            num_workers: int,
+                           cache: bool = True,
                            save: bool = True,
                            fn='auc.csv') -> pd.DataFrame:
         """
@@ -442,14 +466,25 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         :param regulons: list of ctxcore.genesig.Regulon objects
         :param auc_threshold:
         :param num_workers:
+        :param cache:
         :param save:
         :param fn:
         :return:
         """
+        if cache and os.path.isfile(fn):
+            logger.info(f'cached file {fn} found')
+            auc_mtx = pd.read_csv(fn)
+            self.auc_mtx = auc_mtx
+            return auc_mtx
+        else:
+            logger.info('cached file not found, calculating auc_activity_level now')
+
         if num_workers is None:
             num_workers = cpu_count()
+
         auc_mtx = aucell(matrix, regulons, auc_threshold=auc_threshold, num_workers=num_workers)
         self.auc_mtx = auc_mtx
+
         if save:
             auc_mtx.to_csv(fn)
         return auc_mtx
@@ -513,7 +548,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         # get TF data
         regulon_dict = self.get_regulon_dict(regulons)
         sub_adj = adjacencies[adjacencies.TF == tf]
-        targets = regulon_dict[tf]
+        targets = regulon_dict[f'{tf}(+)']
         # all the target genes of the TF
         sub_df = sub_adj[sub_adj.target.isin(targets)]
         sub_df.to_csv(fn, index=False, sep='\t')
@@ -550,7 +585,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         # 1. load TF list
         if tfs_fn is None:
             tfs = 'all'
-            #tfs = self._gene_names
+            # tfs = self._gene_names
         else:
             tfs = self.load_tfs(tfs_fn)
 
@@ -561,13 +596,16 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         modules = self.get_modules(adjacencies, df)
         # 4. Regulons prediction aka cisTarget
         regulons = self.prune_modules(modules, dbs, motif_anno_fn, num_workers=24)
+        self.regulons_to_csv(regulons)
+        self.regulons_to_json(regulons)
         # 5: Cellular enrichment (aka AUCell)
         auc_matrix = self.auc_activity_level(df, regulons, auc_threshold=0.5, num_workers=num_workers)
 
         # save results
         if save:
-            self.to_loom(df, auc_matrix, regulons)
-            self.to_cytoscape(regulons, adjacencies, tfs)
+            # self.to_loom(df, auc_matrix, regulons)
+            print(type(regulons))
+            self.to_cytoscape(regulons, adjacencies, 'Zfp354c')
 
 
 class PlotRegulatoryNetwork(PlotBase):
@@ -645,7 +683,7 @@ class PlotRegulatoryNetwork(PlotBase):
         if isinstance(data, anndata.AnnData):
             return sc.pl.dotplot(data, var_names=gene_names, groupby=cluster_label, save=save)
         elif isinstance(data, StereoExpData):
-            print('for StereoExpData object, please use function: dotplot_stereo')
+            logger.info('for StereoExpData object, please use function: dotplot_stereo')
 
     @staticmethod
     def auc_heatmap(auc_mtx, width=8, height=8, fn='auc_heatmap.png'):
