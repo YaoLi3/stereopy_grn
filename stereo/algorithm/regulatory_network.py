@@ -81,12 +81,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
     @data.setter
     def data(self, data: Union[StereoExpData, anndata.AnnData]):
         self._data = data
-        if isinstance(data, StereoExpData):
-            self._matrix = data.exp_matrix
-        elif isinstance(data, anndata.AnnData):
-            self._matrix = data.X
-            self._gene_names = data.var_names
-            self._cell_names = self._data.obs_names
+        self.load_data_info()
 
     @property
     def matrix(self):
@@ -412,7 +407,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             regulon_list = df2regulons(df)
             # alternative:
             #regulon_list = load_signatures(fn)
-            #self.regulon_list = regulon_list
+            self.regulon_list = regulon_list
             return regulon_list
         else:
             logger.info('cached file not found, running prune modules now')
@@ -430,10 +425,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                 self.regulons_to_json(regulon_list)
 
             # alternative way of getting regulon_list, without creating df first
-            # regulon_list = prune(dbs, modules, motif_anno_fn)
+            #regulon_list = prune(dbs, modules, motif_anno_fn)
             return regulon_list
         else:
-            # warnings.warn('if prune_modules is set to False')
             logger.warning('if prune_modules is set to False')
 
     @staticmethod
@@ -570,9 +564,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         :param save:
         :return:
         """
-        # 0. set param values
-        self.load_data_info()
-
         matrix = self._matrix
         df = self._data.to_df()
 
@@ -596,15 +587,15 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         modules = self.get_modules(adjacencies, df)
         # 4. Regulons prediction aka cisTarget
         regulons = self.prune_modules(modules, dbs, motif_anno_fn, num_workers=24)
-        self.regulons_to_csv(regulons)
-        self.regulons_to_json(regulons)
+
         # 5: Cellular enrichment (aka AUCell)
         auc_matrix = self.auc_activity_level(df, regulons, auc_threshold=0.5, num_workers=num_workers)
 
         # save results
         if save:
-            # self.to_loom(df, auc_matrix, regulons)
-            print(type(regulons))
+            self.regulons_to_csv(regulons)
+            self.regulons_to_json(regulons)
+            self.to_loom(df, auc_matrix, regulons)
             self.to_cytoscape(regulons, adjacencies, 'Zfp354c')
 
 
@@ -612,6 +603,26 @@ class PlotRegulatoryNetwork(PlotBase):
     """
     Plot Gene Regulatory Networks related plots
     """
+    def __init__(self, data):
+        super(PlotRegulatoryNetwork, self).__init__(data)
+        self._regulon_list = None  # list, check
+        self._auc_mtx = None  # check
+
+    @property
+    def regulon_list(self):
+        return self._regulon_list
+
+    @regulon_list.setter
+    def regulon_list(self, value):
+        self._regulon_list = value
+
+    @property
+    def auc_mtx(self):
+        return self._auc_mtx
+
+    @auc_mtx.setter
+    def auc_mtx(self, value):
+        self._auc_mtx = value
 
     @staticmethod
     def _cal_percent_df(exp_matrix, cluster_meta, regulon, ct, cutoff=0):
@@ -648,7 +659,7 @@ class PlotRegulatoryNetwork(PlotBase):
         return np.mean(g_ct_exp)
 
     @staticmethod
-    def dotplot_stereo(StereoExpData, **kwargs):
+    def dotplot_stereo(data: StereoExpData, **kwargs):
         """
         Intuitive way of visualizing how feature expression changes across different
         identity classes (clusters). The size of the dot encodes the percentage of
@@ -676,9 +687,6 @@ class PlotRegulatoryNetwork(PlotBase):
         :param cluster_label: label of clustering output
         :param save: if save plot into a file
         :return: plt axe object
-
-        e.g.
-            there is an anndata
         """
         if isinstance(data, anndata.AnnData):
             return sc.pl.dotplot(data, var_names=gene_names, groupby=cluster_label, save=save)
@@ -746,36 +754,39 @@ class PlotRegulatoryNetwork(PlotBase):
             return True
 
     @staticmethod
-    def rss_heatmap(adata: anndata.AnnData, auc_mtx: pd.DataFrame, meta, regulons_fn='regulon_list.csv'):
+    def rss_heatmap(data: anndata.AnnData,
+                    auc_mtx: pd.DataFrame,
+                    meta,
+                    regulons,
+                    save = True,
+                    fn='clusters-heatmap-top5.png',
+                    **kwargs):
         """
         
-        :param adata: 
+        :param data: 
         :param auc_mtx: 
         :param regulons_fn: 
         :param meta_data: 
         :return: 
         """
-        # scenic output
-        # lf = lp.connect('out.loom', mode='r', validate=False)  # validate must set to False
-        # auc_mtx = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
-        # data = read_ann_h5ad('/dellfsqd2/ST_OCEAN/USER/liyao1/stereopy/resource/StereopyData/Cellbin_deversion.h5ad')
-        # meta = pd.read_csv('meta_mousebrain.csv', index_col=0).iloc[:, 0]
+        meta = pd.read_csv('meta_mousebrain.csv', index_col=0).iloc[:, 0]
 
-        # load the regulon_list from a file using the load_signatures function
-        sig = load_signatures(regulons_fn)  # regulons_df -> list of regulon_list
         # TODO: adapt to StereoExpData
-        # adata = add_scenic_metadata(adata, auc_mtx, sig)
+        # load the regulon_list from a file using the load_signatures function
+        #regulons = load_signatures(regulons_fn)  # regulons_df -> list of regulon_list
+        data = add_scenic_metadata(data, auc_mtx, regulons)
 
-        ### Regulon specificity scores (RSS) across predicted cell types
-        ### Calculate RSS
+        # Regulon specificity scores (RSS) across predicted cell types
+        # Calculate RSS
         rss_cellType = regulon_specificity_scores(auc_mtx, meta)
-        # rss_cellType.to_csv('regulon_specificity_scores.txt')
+        rss_cellType.to_csv('regulon_specificity_scores.txt')
 
+        # calculate z-score
         func = lambda x: (x - x.mean()) / x.std(ddof=0)
         auc_mtx_Z = auc_mtx.transform(func, axis=0)
         auc_mtx_Z.to_csv('pyscenic_output.prune_modules.zscore.csv')
 
-        ### Select the top 5 regulon_list from each cell type
+        # Select the top 5 regulon_list from each cell type
         cats = sorted(list(set(meta)))
         topreg = []
         for i, c in enumerate(cats):
@@ -784,21 +795,12 @@ class PlotRegulatoryNetwork(PlotBase):
             )
         topreg = list(set(topreg))
 
-        colors = [
-            '#d60000', '#e2afaf', '#018700', '#a17569', '#e6a500', '#004b00',
-            '#6b004f', '#573b00', '#005659', '#5e7b87', '#0000dd', '#00acc6',
-            '#bcb6ff', '#bf03b8', '#645472', '#790000', '#0774d8', '#729a7c',
-            '#8287ff', '#ff7ed1', '#8e7b01', '#9e4b00', '#8eba00', '#a57bb8',
-            '#5901a3', '#8c3bff', '#a03a52', '#a1c8c8', '#f2007b', '#ff7752',
-            '#bac389', '#15e18c', '#60383b', '#546744', '#380000', '#e252ff',
-        ]
-        # colorsd = dict((f'c{i}', c) for i, c in enumerate(colors))
-        # colormap = [colorsd[x] for x in clusters_series]
-
         sns.set(font_scale=1.2)
         g = sns.clustermap(auc_mtx_Z[topreg], annot=False, square=False, linecolor='gray', yticklabels=True,
                            xticklabels=True, vmin=-2, vmax=6, cmap="YlGnBu", figsize=(21, 16))
         g.cax.set_visible(True)
         g.ax_heatmap.set_ylabel('')
         g.ax_heatmap.set_xlabel('')
-        plt.savefig("clusters-heatmap-top5.png")
+        if save:
+            plt.savefig(fn)
+        return g
