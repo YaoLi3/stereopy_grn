@@ -353,10 +353,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                                 **kwargs)
         logger.info('Network Inference DONE')
 
-        # 2023-03-17: not working
-        # this will change dtype to numpy str_, not (python?) str which is what we wanted
-        # adjacencies['TF'] = adjacencies['TF'].astype(str)
-        # adjacencies['target'] = adjacencies['target'].astype(str)
         if save:
             adjacencies.to_csv(fn, index=False)
         self.adjacencies = adjacencies
@@ -412,9 +408,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         if tf_list is not None:
             common_tf_list = list(set(tf_list).intersection(set(local_correlations.columns)))
             assert len(common_tf_list) > 0, 'predefined TFs not found in data'
-            # if not common_tf_list:
-            #   logger.error('Did not find predefined TFs in the expression data, no intersection')
-            #  sys.exit(0)
             local_correlations = local_correlations[common_tf_list]
 
         # reshape matrix
@@ -505,8 +498,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             if save:
                 self.regulons_to_json(regulon_list)
 
-            # alternative way of getting regulon_list, without creating df first
-            # regulon_list = prune(dbs, modules, motif_anno_fn)
             return regulon_list
         else:
             logger.warning('if prune_modules is set to False')
@@ -677,7 +668,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             adjacencies = self.grn_inference(matrix, genes=target_genes, tf_names=tfs, num_workers=num_workers,
                                              cache=False, save=save, fn=f'{prefix}_adj.csv')
         elif method == 'hotspot':
-            adjacencies = self.hotspot_matrix(self.data, tf_list=tfs, num_workers=num_workers)
+            adjacencies = self.hotspot_matrix(self.data, tf_list=tfs, jobs=num_workers)
         # adj_col = adjacencies.columns
         modules = self.get_modules(adjacencies, df)
 
@@ -693,7 +684,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
 
         # save results
         if save:
-            # self.regulons_to_csv(regulons)
             self.regulons_to_json(regulons, fn=f'{prefix}_regulons.json')
             self.to_loom(df, auc_matrix, regulons)
             # self.to_cytoscape(regulons, adjacencies, 'Zfp354c')
@@ -901,10 +891,9 @@ class PlotRegulatoryNetwork(PlotBase):
         # prepare plotting data
         sub_zscore = auc_zscore[reg_name]
         # sort data points by zscore (low to high), because first dot will be covered by latter dots
-        zorder = np.argsort(sub_zscore[reg_name].values)
+        zorder = np.argsort(sub_zscore.values)
         # plot cell/bin dot, x y coor
-        sc = plt.scatter(cell_coor[:, 0][zorder], cell_coor[:, 1][zorder], c=sub_zscore[reg_name][zorder], marker='.',
-                         edgecolors='none', cmap='plasma', lw=0, **kwargs)
+        sc = plt.scatter(cell_coor[:, 0][zorder], cell_coor[:, 1][zorder], c=sub_zscore.iloc[zorder], marker='.', edgecolors='none', cmap='plasma', lw=0, **kwargs)
         plt.box(False)
         plt.axis('off')
         plt.colorbar(sc, shrink=0.35)
@@ -931,10 +920,9 @@ class PlotRegulatoryNetwork(PlotBase):
         # prepare plotting data
         sub_zscore = auc_zscore[reg_name]
         # sort data points by zscore (low to high), because first dot will be covered by latter dots
-        zorder = np.argsort(sub_zscore[reg_name].values)
+        zorder = np.argsort(sub_zscore.values)
         # plot cell/bin dot, x y coor
-        sc = plt.scatter(cell_coor[:, 0][zorder], cell_coor[:, 1][zorder], c=sub_zscore[reg_name][zorder], marker='.',
-                         edgecolors='none', cmap='plasma', lw=0, **kwargs)
+        sc = plt.scatter(cell_coor[:, 0][zorder], cell_coor[:, 1][zorder], c=sub_zscore.iloc[zorder], marker='.', edgecolors='none', cmap='plasma', lw=0, **kwargs)
         plt.box(False)
         plt.axis('off')
         plt.colorbar(sc, shrink=0.35)
