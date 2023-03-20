@@ -14,6 +14,7 @@ change log:
 
 # python core modules
 import os
+import sys
 import csv
 import warnings
 from typing import Union
@@ -22,6 +23,7 @@ from typing import Union
 import json
 import glob
 import anndata
+import hotspot
 import scipy.sparse
 import pandas as pd
 import numpy as np
@@ -81,8 +83,30 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         self._regulon_dict = None
 
         # other settings
-        # self._num_workers = num_workers
-        # self._thld = auc_thld
+        # self._params = {'hotspot': {
+        #                     'num_workers': None,
+        #                     'rank_threshold': 1500,
+        #                     'prune_auc_threshold': 0.001,
+        #                     'nes_threshold': 3.0,
+        #                     'motif_similarity_fdr': 0.1,
+        #                     'auc_threshold: 0.5
+        #                 },
+        #                 'grnboost': {
+        #                     'num_workers': None,
+        #                     'rank_threshold': 1500,
+        #                     'prune_auc_threshold': 0.5,
+        #                     'nes_threshold': 3.0,
+        #                     'motif_similarity_fdr': 0.05,
+        #                     'auc_threshold': 0.5
+        #                 },
+        #                 'scoexp': {
+        #                     'num_workers': None,
+        #                     'rank_threshold': 1500,
+        #                     'prune_auc_threshold': 0.001,
+        #                     'nes_threshold': 3.0,
+        #                     'motif_similarity_fdr': 0.05,
+        #                     'auc_threshold': 0.5
+        #                 }}
 
     @property
     def data(self):
@@ -148,22 +172,6 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
     @auc_mtx.setter
     def auc_mtx(self, value):
         self._auc_mtx = value
-
-    # @property
-    # def num_workers(self):
-    #     return self._num_workers
-    #
-    # @num_workers.setter
-    # def num_workers(self, value):
-    #     self._num_workers = value
-    #
-    # @property
-    # def thld(self):
-    #     return self._thld
-    #
-    # @thld.setter
-    # def thld(self, value):
-    #     self._thld = value
 
     def load_data_info(self):
         """"""
@@ -343,8 +351,14 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                                 verbose=verbose,
                                 client_or_address=custom_client,
                                 **kwargs)
+        logger.info('Network Inference DONE')
+
+        # 2023-03-17: not working
+        # this will change dtype to numpy str_, not (python?) str which is what we wanted
+        # adjacencies['TF'] = adjacencies['TF'].astype(str)
+        # adjacencies['target'] = adjacencies['target'].astype(str)
         if save:
-            adjacencies.to_csv(fn, index=False)  # adj.csv, don't have to save into a file
+            adjacencies.to_csv(fn, index=False)
         self.adjacencies = adjacencies
         return adjacencies
 
@@ -358,6 +372,58 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         unique_adj_genes = set(adjacencies["TF"]).union(set(adjacencies["target"])) - set(df.columns)
         logger.info(f'find {len(unique_adj_genes) / len(set(df.columns))} unique genes')
         return unique_adj_genes
+
+    @staticmethod
+    def hotspot_matrix(data: anndata.AnnData,
+                       model='danb',
+                       latent_obsm_key="X_pca",
+                       umi_counts_obs_key="total_counts",
+                       weighted_graph=False,
+                       n_neighbors=30,
+                       hotspot_fdr=0.05,
+                       tf_list=None,
+                       cache=True,
+                       save=True,
+                       jobs=None,
+                       fn: str = 'adj.csv') -> pd.DataFrame:
+        """
+
+        :param data:
+        :param tf_list:
+        :param cache:
+        :param save:
+        :param num_workers:
+        :param fn:
+        :return:
+        """
+        # remove all zero genes
+        sc.pp.filter_genes(data, min_counts=1, inplace=True)  #TODO: move outside of the function
+
+        hs = hotspot.Hotspot(data, model=model, latent_obsm_key=latent_obsm_key, umi_counts_obs_key=umi_counts_obs_key)
+        hs.create_knn_graph(weighted_graph=weighted_graph, n_neighbors=n_neighbors)
+        hs_results = hs.compute_autocorrelations()
+        hs_genes = hs_results.loc[hs_results.FDR < hotspot_fdr].index  # Select genes
+        local_correlations = hs.compute_local_correlations(hs_genes, jobs=jobs)  # jobs for parallelization
+        local_correlations.to_csv('local_correlations.csv')
+        logger.info('Network Inference DONE')
+        logger.info(f'Hotspot: create {local_correlations.shape[0]} features')
+
+        # subset by TFs
+        if tf_list is not None:
+            common_tf_list = list(set(tf_list).intersection(set(local_correlations.columns)))
+            assert len(common_tf_list) > 0, 'predefined TFs not found in data'
+            # if not common_tf_list:
+            #   logger.error('Did not find predefined TFs in the expression data, no intersection')
+            #  sys.exit(0)
+            local_correlations = local_correlations[common_tf_list]
+
+        # reshape matrix
+        local_correlations['TF'] = local_correlations.columns
+        local_correlations = local_correlations.melt(id_vars=['TF'])
+        local_correlations.columns = ['TF', 'target', 'importance']
+        if save:
+            local_correlations.to_csv(fn, index=False)
+        return local_correlations
 
     @staticmethod
     def load_database(database_dir: str) -> list:
@@ -434,6 +500,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                 df.to_csv(fn)  # motifs filename
             regulon_list = df2regulons(df)
             self.regulon_list = regulon_list
+            logger.info('Prune DONE')
 
             if save:
                 self.regulons_to_json(regulon_list)
@@ -482,7 +549,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         """
         if cache and os.path.isfile(fn):
             logger.info(f'cached file {fn} found')
-            auc_mtx = pd.read_csv(fn)
+            auc_mtx = pd.read_csv(fn, index_col=0)  # important! cell must be index, not one of the column
             self.auc_mtx = auc_mtx
             return auc_mtx
         else:
@@ -568,21 +635,27 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
              databases: str,
              motif_anno_fn: str,
              tfs_fn,
+             method: str = 'grnboost',
              target_genes=None,
+             cache=False,
              num_workers=None,
-             save=True):
+             save=True,
+             prefix: str = 'project'):
         """
+        :param method:
         :param databases:
         :param motif_anno_fn:
         :param tfs_fn:
         :param target_genes:
+        :param cache:
         :param num_workers:
         :param save:
+        :param prefix:
         :return:
         """
+        global adjacencies
         matrix = self._matrix
         df = self._data.to_df()
-
         if num_workers is None:
             num_workers = cpu_count()
 
@@ -598,21 +671,32 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
 
         # 2. load the ranking databases
         dbs = self.load_database(databases)
+
         # 3. GRN inference
-        adjacencies = self.grn_inference(matrix, genes=target_genes, tf_names=tfs, num_workers=num_workers)
+        if method == 'grnboost':
+            adjacencies = self.grn_inference(matrix, genes=target_genes, tf_names=tfs, num_workers=num_workers,
+                                             cache=False, save=save, fn=f'{prefix}_adj.csv')
+        elif method == 'hotspot':
+            adjacencies = self.hotspot_matrix(self.data, tf_list=tfs, num_workers=num_workers)
+        # adj_col = adjacencies.columns
         modules = self.get_modules(adjacencies, df)
+
         # 4. Regulons prediction aka cisTarget
-        regulons = self.prune_modules(modules, dbs, motif_anno_fn, num_workers=24)
+        regulons = self.prune_modules(modules, dbs, motif_anno_fn, num_workers=num_workers, save=save, cache=cache,
+                                      fn=f'{prefix}_motifs.csv', rank_threshold=1500, auc_threshold=0.001,
+                                      nes_threshold=3.0, motif_similarity_fdr=0.1)
         self.regulon_dict = self.get_regulon_dict(regulons)
+
         # 5: Cellular enrichment (aka AUCell)
-        auc_matrix = self.auc_activity_level(df, regulons, auc_threshold=0.5, num_workers=num_workers)
+        auc_matrix = self.auc_activity_level(df, regulons, auc_threshold=0.5, num_workers=num_workers, cache=cache,
+                                             save=save, fn=f'{prefix}_auc.csv')
 
         # save results
         if save:
-            self.regulons_to_csv(regulons)
-            self.regulons_to_json(regulons)
+            # self.regulons_to_csv(regulons)
+            self.regulons_to_json(regulons, fn=f'{prefix}_regulons.json')
             self.to_loom(df, auc_matrix, regulons)
-            self.to_cytoscape(regulons, adjacencies, 'Zfp354c')
+            # self.to_cytoscape(regulons, adjacencies, 'Zfp354c')
 
 
 class PlotRegulatoryNetwork(PlotBase):
@@ -743,6 +827,8 @@ class PlotRegulatoryNetwork(PlotBase):
         cells within a class, while the color encodes the AverageExpression level
         across all cells within a class (blue is high).
 
+        :param celltypes:
+        :param palette:
         :param groupby:
         :param regulon_names:
         :param regulon_dict:
@@ -783,7 +869,7 @@ class PlotRegulatoryNetwork(PlotBase):
         return g
 
     @staticmethod
-    def auc_heatmap(auc_mtx, width=8, height=8, fn='auc_heatmap.png', **kwargs):
+    def auc_heatmap(auc_mtx: pd.DataFrame, width=8, height=8, fn='auc_heatmap.png', **kwargs):
         """
         Plot heatmap for auc value for regulons
         :param height:
@@ -792,6 +878,8 @@ class PlotRegulatoryNetwork(PlotBase):
         :param fn:
         :return:
         """
+        if 'Cell' in auc_mtx.columns:
+            auc_mtx = auc_mtx.set_index('Cell')
         plt.figsize = (width, height)
         sns.clustermap(auc_mtx, **kwargs)
         plt.tight_layout()
@@ -811,7 +899,7 @@ class PlotRegulatoryNetwork(PlotBase):
         cell_coor = data.position
         auc_zscore = cal_zscore(auc_mtx)
         # prepare plotting data
-        sub_zscore = auc_zscore[['Cell', reg_name]]
+        sub_zscore = auc_zscore[reg_name]
         # sort data points by zscore (low to high), because first dot will be covered by latter dots
         zorder = np.argsort(sub_zscore[reg_name].values)
         # plot cell/bin dot, x y coor
@@ -841,7 +929,7 @@ class PlotRegulatoryNetwork(PlotBase):
         cell_coor = data.obsm[pos_label]
         auc_zscore = cal_zscore(auc_mtx)
         # prepare plotting data
-        sub_zscore = auc_zscore[['Cell', reg_name]]
+        sub_zscore = auc_zscore[reg_name]
         # sort data points by zscore (low to high), because first dot will be covered by latter dots
         zorder = np.argsort(sub_zscore[reg_name].values)
         # plot cell/bin dot, x y coor
@@ -852,43 +940,6 @@ class PlotRegulatoryNetwork(PlotBase):
         plt.colorbar(sc, shrink=0.35)
         plt.savefig(f'{reg_name.split("(")[0]}.png')
         plt.close()
-
-    # @staticmethod
-    # def plot_2d_reg_stereo(auc_mtx, cell_coor: pd.DataFrame, reg_name: str, **kwargs):
-    #     """
-    #     Plot genes of one regulon on a 2D map
-    #     :param auc_mtx:
-    #     :param cell_coor:
-    #     :param reg_name:
-    #     :return:
-    #     """
-    #     auc_zscore = cal_zscore(auc_mtx)
-    #     # prepare plotting data
-    #     sub_zscore = auc_zscore[['Cell', reg_name]]
-    #     # sort data points by zscore (low to high), because first dot will be covered by latter dots
-    #     zorder = np.argsort(sub_zscore[reg_name].values)
-    #     # plot cell/bin dot, x y coor
-    #     sc = plt.scatter(cell_coor['x'][zorder], cell_coor['y'][zorder], c=sub_zscore[reg_name][zorder], marker='.',
-    #                      edgecolors='none', cmap='plasma', lw=0, **kwargs)
-    #     plt.box(False)
-    #     plt.axis('off')
-    #     plt.colorbar(sc, shrink=0.35)
-    #     plt.savefig(f'{reg_name.split("(")[0]}.png')
-    #     plt.close()
-
-    # @staticmethod
-    # def multi_reg_2d(auc_mtx, cell_coor, target_regs, **kwargs):
-    #     """
-    #     Plot multiple regulons
-    #     :param auc_mtx:
-    #     :param cell_coor:
-    #     :param target_regs:
-    #     :return:
-    #     """
-    #     auc_zscore = cal_zscore(auc_mtx)
-    #     for reg in target_regs:
-    #         if is_regulon(reg):
-    #             PlotRegulatoryNetwork.plot_2d_reg_stereo(auc_zscore, cell_coor, reg, **kwargs)
 
     @staticmethod
     def rss_heatmap(data: anndata.AnnData,
@@ -948,7 +999,7 @@ def cal_zscore(auc_mtx: pd.DataFrame) -> pd.DataFrame:
     """
     func = lambda x: (x - x.mean()) / x.std(ddof=0)
     auc_zscore = auc_mtx.transform(func, axis=0)
-    auc_zscore.to_csv('auc_zscore.csv')
+    auc_zscore.to_csv('auc_zscore.csv', index=False)
     return auc_zscore
 
 
