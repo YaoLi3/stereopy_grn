@@ -294,7 +294,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             tfs_in_file = [line.strip() for line in file.readlines()]
         return tfs_in_file
 
-    # Gene Regulatory Network inference methods
+    # -------------------------------------------#
+    #             NETWORK INFERENCE              #
+    # -------------------------------------------#
     @staticmethod
     def _set_client(num_workers: int) -> Client:
         """
@@ -370,43 +372,99 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         return unique_adj_genes
 
     @staticmethod
-    def hotspot_matrix(data: anndata.AnnData,
-                       model='danb',
-                       latent_obsm_key="X_pca",
-                       umi_counts_obs_key="total_counts",
-                       weighted_graph=False,
+    def input_hotspot(data: StereoExpData):
+        """
+        Extract needed information to construct a Hotspot instance from StereoExpData data
+        :param data:
+        :return: a dictionary
+        """
+        # 3. use dataframe and position array, StereoExpData as well
+        counts = data.to_df().T  # gene x cell
+        position = data.position
+        num_umi = counts.sum(axis=0)  # total counts for each cell
+        # Filter genes
+        gene_counts = (counts > 0).sum(axis=1)
+        valid_genes = gene_counts >= 50
+        counts = counts.loc[valid_genes]
+        return {'counts': counts, 'num_umi': num_umi, 'position': position}
+
+    @staticmethod
+    def hotspot_matrix(data,
+                       model='bernoulli',
+                       distances: pd.DataFrame = None,
+                       tree=None,
+                       weighted_graph: bool = False,
                        n_neighbors=30,
-                       hotspot_fdr=0.05,
-                       tf_list=None,
-                       cache=True,
+                       fdr_threshold: float = 0.05,
+                       tf_list: list = None,
                        save=True,
                        jobs=None,
-                       fn: str = 'adj.csv') -> pd.DataFrame:
+                       fn: str = 'adj.csv',
+                       **kwargs) -> pd.DataFrame:
         """
-
-        :param data:
-        :param tf_list:
-        :param cache:
-        :param save:
-        :param num_workers:
-        :param fn:
-        :return:
+        Inference of co-expression modules via hotspot method
+        :param data: Count matrix (shape is cells by genes)
+        :param model: Specifies the null model to use for gene expression.
+            Valid choices are:
+                * 'danb': Depth-Adjusted Negative Binomial
+                * 'bernoulli': Models probability of detection
+                * 'normal': Depth-Adjusted Normal
+                * 'none': Assumes data has been pre-standardized
+        :param distances: Distances encoding cell-cell similarities directly
+            Shape is (cells x cells)
+        :param tree: Root tree node.  Can be created using ete3.Tree
+        :param weighted_graph: Whether or not to create a weighted graph
+        :param n_neighbors: Neighborhood size
+        :param neighborhood_factor: Used when creating a weighted graph.  Sets how quickly weights decay
+            relative to the distances within the neighborhood.  The weight for
+            a cell with a distance d will decay as exp(-d/D) where D is the distance
+            to the `n_neighbors`/`neighborhood_factor`-th neighbor.
+        :param approx_neighbors: Use approximate nearest neighbors or exact scikit-learn neighbors. Only
+            when hotspot initialized with `latent`.
+        :param fdr_threshold: Correlation theshold at which to stop assigning genes to modules
+        :param tf_list: predefined TF names
+        :param save: if save results onto disk
+        :param jobs: Number of parallel jobs to run
+        :param fn: output file name
+        :return: A dataframe, local correlation Z-scores between genes (shape is genes x genes)
         """
-        # remove all zero genes
-        sc.pp.filter_genes(data, min_counts=1, inplace=True)  #TODO: move outside of the function
+        global hs
+        if isinstance(data, StereoExpData):
+            hotspot_data = InferenceRegulatoryNetwork.input_hotspot(data)
+            hs = hotspot.Hotspot.legacy_init(hotspot_data['counts'],
+                                             model=model,
+                                             latent=hotspot_data['position'],
+                                             umi_counts=hotspot_data['num_umi'],
+                                             distances=distances,
+                                             tree=tree)
+        elif isinstance(data, anndata.AnnData):
+            sc.pp.filter_genes(data, min_counts=1, inplace=True)
+            hs = hs = hotspot.Hotspot(data,
+                                      model=model,
+                                      latent_obsm_key="spatial",
+                                      umi_counts_obs_key="total_counts",
+                                      **kwargs)
 
-        hs = hotspot.Hotspot(data, model=model, latent_obsm_key=latent_obsm_key, umi_counts_obs_key=umi_counts_obs_key)
         hs.create_knn_graph(weighted_graph=weighted_graph, n_neighbors=n_neighbors)
-        hs_results = hs.compute_autocorrelations()
-        hs_genes = hs_results.loc[hs_results.FDR < hotspot_fdr].index  # Select genes
+
+        # the most? time consuming step
+        logger.info('compute_autocorrelations()')
+        hs_results = hs.compute_autocorrelations(jobs=jobs)
+        logger.info('compute_autocorrelations() done')
+
+        hs_genes = hs_results.loc[hs_results.FDR < fdr_threshold].index  # Select genes
+        logger.info('compute_local_correlations')
+        # nope, THIS is the most time consuming step
         local_correlations = hs.compute_local_correlations(hs_genes, jobs=jobs)  # jobs for parallelization
-        local_correlations.to_csv('local_correlations.csv')
         logger.info('Network Inference DONE')
         logger.info(f'Hotspot: create {local_correlations.shape[0]} features')
+        logger.info(local_correlations.shape)
+        local_correlations.to_csv('local_correlations.csv')
 
         # subset by TFs
-        if tf_list is not None:
+        if tf_list:
             common_tf_list = list(set(tf_list).intersection(set(local_correlations.columns)))
+            logger.info(f'detected {len(common_tf_list)} predefined TF in data')
             assert len(common_tf_list) > 0, 'predefined TFs not found in data'
             local_correlations = local_correlations[common_tf_list]
 
@@ -414,6 +472,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         local_correlations['TF'] = local_correlations.columns
         local_correlations = local_correlations.melt(id_vars=['TF'])
         local_correlations.columns = ['TF', 'target', 'importance']
+        # remove if TF = target
+        local_correlations = local_correlations[local_correlations.TF != local_correlations.target]
+
         if save:
             local_correlations.to_csv(fn, index=False)
         return local_correlations
@@ -430,8 +491,11 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         dbs = [RankingDatabase(fname=fname, name=_name(fname)) for fname in db_fnames]
         return dbs
 
-    def get_modules(self,
-                    adjacencies: pd.DataFrame,
+    # -------------------------------------------#
+    #            MODULE GENERATION               #
+    # -------------------------------------------#
+    @staticmethod
+    def get_modules(adjacencies: pd.DataFrame,
                     matrix,
                     rho_mask_dropouts: bool = False,
                     **kwargs):
@@ -490,13 +554,13 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         if is_prune:
             with ProgressBar():
                 df = prune2df(dbs, modules, motif_anno_fn, num_workers=num_workers, **kwargs)
-                df.to_csv(fn)  # motifs filename
             regulon_list = df2regulons(df)
             self.regulon_list = regulon_list
             logger.info('Prune DONE')
 
             if save:
-                self.regulons_to_json(regulon_list)
+                df.to_csv(fn)  # motifs filename
+                #self.regulons_to_json(regulon_list)
 
             return regulon_list
         else:
@@ -515,6 +579,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             regulon_dict[reg.name] = targets
         return regulon_dict
 
+    # -------------------------------------------#
+    #    MOTIF ENRICHMENT & REGULON PREDICTION   #
+    # -------------------------------------------#
     def auc_activity_level(self,
                            matrix,
                            regulons: list,
@@ -556,7 +623,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             auc_mtx.to_csv(fn)
         return auc_mtx
 
-    # Results saving methods
+    # -------------------------------------------#
+    #               OTHER METHODS                #
+    # -------------------------------------------#
     def regulons_to_json(self, regulon_list: list, fn='regulons.json'):
         """
         Write regulon dictionary into json file
@@ -621,7 +690,9 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         sub_df = sub_adj[sub_adj.target.isin(targets)]
         sub_df.to_csv(fn, index=False, sep='\t')
 
-    # GRN pipeline main logic
+    # -------------------------------------------#
+    #           GRN pipeline main logic          #
+    # -------------------------------------------#
     def main(self,
              databases: str,
              motif_anno_fn: str,
@@ -893,7 +964,8 @@ class PlotRegulatoryNetwork(PlotBase):
         # sort data points by zscore (low to high), because first dot will be covered by latter dots
         zorder = np.argsort(sub_zscore.values)
         # plot cell/bin dot, x y coor
-        sc = plt.scatter(cell_coor[:, 0][zorder], cell_coor[:, 1][zorder], c=sub_zscore.iloc[zorder], marker='.', edgecolors='none', cmap='plasma', lw=0, **kwargs)
+        sc = plt.scatter(cell_coor[:, 0][zorder], cell_coor[:, 1][zorder], c=sub_zscore.iloc[zorder], marker='.',
+                         edgecolors='none', cmap='plasma', lw=0, **kwargs)
         plt.box(False)
         plt.axis('off')
         plt.colorbar(sc, shrink=0.35)
@@ -922,7 +994,8 @@ class PlotRegulatoryNetwork(PlotBase):
         # sort data points by zscore (low to high), because first dot will be covered by latter dots
         zorder = np.argsort(sub_zscore.values)
         # plot cell/bin dot, x y coor
-        sc = plt.scatter(cell_coor[:, 0][zorder], cell_coor[:, 1][zorder], c=sub_zscore.iloc[zorder], marker='.', edgecolors='none', cmap='plasma', lw=0, **kwargs)
+        sc = plt.scatter(cell_coor[:, 0][zorder], cell_coor[:, 1][zorder], c=sub_zscore.iloc[zorder], marker='.',
+                         edgecolors='none', cmap='plasma', lw=0, **kwargs)
         plt.box(False)
         plt.axis('off')
         plt.colorbar(sc, shrink=0.35)
