@@ -389,9 +389,10 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
         return {'counts': counts, 'num_umi': num_umi, 'position': position}
 
     @staticmethod
-    def hotspot_matrix(data,
+    def hotspot_matrix(count_data,
                        model='bernoulli',
-                       distances: pd.DataFrame = None,
+                       position,
+                       num_umi,
                        tree=None,
                        weighted_graph: bool = False,
                        n_neighbors=30,
@@ -399,66 +400,47 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
                        tf_list: list = None,
                        save=True,
                        jobs=None,
-                       fn: str = 'adj.csv',
-                       **kwargs) -> pd.DataFrame:
+                       fn: str = 'adj.csv') -> pd.DataFrame:
         """
         Inference of co-expression modules via hotspot method
-        :param data: Count matrix (shape is cells by genes)
+        :param count_data: Count matrix (shape is cells by genes)
         :param model: Specifies the null model to use for gene expression.
             Valid choices are:
                 * 'danb': Depth-Adjusted Negative Binomial
                 * 'bernoulli': Models probability of detection
                 * 'normal': Depth-Adjusted Normal
                 * 'none': Assumes data has been pre-standardized
-        :param distances: Distances encoding cell-cell similarities directly
-            Shape is (cells x cells)
+        :param position: cell coordinates, np.array or pd.DataFrame
+        :param num_umi: total counts for each cell
         :param tree: Root tree node.  Can be created using ete3.Tree
         :param weighted_graph: Whether or not to create a weighted graph
         :param n_neighbors: Neighborhood size
-        :param neighborhood_factor: Used when creating a weighted graph.  Sets how quickly weights decay
-            relative to the distances within the neighborhood.  The weight for
-            a cell with a distance d will decay as exp(-d/D) where D is the distance
-            to the `n_neighbors`/`neighborhood_factor`-th neighbor.
-        :param approx_neighbors: Use approximate nearest neighbors or exact scikit-learn neighbors. Only
-            when hotspot initialized with `latent`.
-        :param fdr_threshold: Correlation theshold at which to stop assigning genes to modules
+        :param fdr_threshold: Correlation threshold at which to stop assigning genes to modules
         :param tf_list: predefined TF names
         :param save: if save results onto disk
         :param jobs: Number of parallel jobs to run
         :param fn: output file name
         :return: A dataframe, local correlation Z-scores between genes (shape is genes x genes)
         """
-        global hs
-        if isinstance(data, StereoExpData):
-            hotspot_data = InferenceRegulatoryNetwork.input_hotspot(data)
-            hs = hotspot.Hotspot.legacy_init(hotspot_data['counts'],
-                                             model=model,
-                                             latent=hotspot_data['position'],
-                                             umi_counts=hotspot_data['num_umi'],
-                                             distances=distances,
-                                             tree=tree)
-        elif isinstance(data, anndata.AnnData):
-            sc.pp.filter_genes(data, min_counts=1, inplace=True)
-            hs = hs = hotspot.Hotspot(data,
-                                      model=model,
-                                      latent_obsm_key="spatial",
-                                      umi_counts_obs_key="total_counts",
-                                      **kwargs)
-
+        # hotspot_data = InferenceRegulatoryNetwork.input_hotspot(data)
+        # hs = hotspot.Hotspot.legacy_init(hotspot_data['counts'],
+        #                                  model=model,
+        #                                  latent=hotspot_data['position'],
+        #                                  umi_counts=hotspot_data['num_umi'],
+        #                                  tree=tree)
+        hs = hotspot.Hotspot.legacy_init(count_data,
+                                         model=model,
+                                         latent=position,
+                                         umi_counts=num_umi,
+                                         tree=tree)
         hs.create_knn_graph(weighted_graph=weighted_graph, n_neighbors=n_neighbors)
 
-        # the most? time consuming step
-        logger.info('compute_autocorrelations()')
         hs_results = hs.compute_autocorrelations(jobs=jobs)
-        logger.info('compute_autocorrelations() done')
 
         hs_genes = hs_results.loc[hs_results.FDR < fdr_threshold].index  # Select genes
-        logger.info('compute_local_correlations')
-        # nope, THIS is the most time consuming step
         local_correlations = hs.compute_local_correlations(hs_genes, jobs=jobs)  # jobs for parallelization
         logger.info('Network Inference DONE')
         logger.info(f'Hotspot: create {local_correlations.shape[0]} features')
-        logger.info(local_correlations.shape)
         local_correlations.to_csv('local_correlations.csv')
 
         # subset by TFs
@@ -466,13 +448,15 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             common_tf_list = list(set(tf_list).intersection(set(local_correlations.columns)))
             logger.info(f'detected {len(common_tf_list)} predefined TF in data')
             assert len(common_tf_list) > 0, 'predefined TFs not found in data'
-            local_correlations = local_correlations[common_tf_list]
+        else:
+            common_tf_list = local_correlations.columns
 
         # reshape matrix
         local_correlations['TF'] = local_correlations.columns
         local_correlations = local_correlations.melt(id_vars=['TF'])
         local_correlations.columns = ['TF', 'target', 'importance']
-        # remove if TF = target
+        local_correlations = local_correlations[local_correlations.TF.isin(common_tf_list)]
+        # remove pairs if TF = target
         local_correlations = local_correlations[local_correlations.TF != local_correlations.target]
 
         if save:
@@ -739,7 +723,7 @@ class InferenceRegulatoryNetwork(AlgorithmBase):
             adjacencies = self.grn_inference(matrix, genes=target_genes, tf_names=tfs, num_workers=num_workers,
                                              cache=False, save=save, fn=f'{prefix}_adj.csv')
         elif method == 'hotspot':
-            adjacencies = self.hotspot_matrix(self.data, tf_list=tfs, jobs=num_workers)
+            adjacencies = self.hotspot_matrix(self.data, position=, num_umi=, tf_list=tfs, jobs=num_workers)
         # adj_col = adjacencies.columns
         modules = self.get_modules(adjacencies, df)
 
